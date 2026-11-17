@@ -1,0 +1,104 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// 2. Model User
+model User {
+  id        String     @id @default(cuid()) // Disamakan bertipe String (cuid)
+  nama      String
+  email     String     @unique
+  password  String
+  pesanan   Pesanan[]
+  cartItems CartItem[] // Relasi balik ke CartItem
+}
+
+// 3. Model Produk
+model Produk {
+  id        String   @id @default(cuid())
+  nama      String   @unique
+  deskripsi String?
+  tempat    String?
+  harga     Int
+  hargabeli Int?
+  stok      Int      @default(0)
+  fotoUrl   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  varians     VarianProduk[]
+  cartItems   CartItem[]
+  detailItems DetailPesanan[]
+  notas       nota[]
+}
+
+// 4. Model VarianProduk
+model VarianProduk {
+  id        String   @id @default(cuid())
+  produkId  String
+  nama      String
+  harga     Int
+  stok      Int      @default(0)
+  fotoUrl   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  produk      Produk          @relation(fields: [produkId], references: [id], onDelete: Cascade)
+  cartItems   CartItem[]
+  detailItems DetailPesanan[]
+}
+
+// 5. Model CartItem
+model CartItem {
+  id       String  @id @default(cuid())
+  userId   String
+  produkId String
+  varianId String?
+  jumlah   Int     @default(1)
+
+  user   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  produk Produk        @relation(fields: [produkId], references: [id], onDelete: Cascade)
+  varian VarianProduk? @relation(fields: [varianId], references: [id], onDelete: SetNull)
+}
+
+// 6. Model Pesanan
+model Pesanan {
+  id          String          @id @default(cuid()) // Disamakan bertipe String (cuid)
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  total       Float
+  createdAt   DateTime        @default(now())
+  detailItems DetailPesanan[] // Relasi balik ke DetailPesanan
+}
+
+// 7. Model DetailPesanan
+model DetailPesanan {
+  id         String  @id @default(cuid())
+  pesananId  String
+  produkId   String
+  varianId   String?
+  namaVarian String?
+  jumlah     Int
+  harga      Int
+
+  pesanan Pesanan       @relation(fields: [pesananId], references: [id], onDelete: Cascade)
+  produk  Produk        @relation(fields: [produkId], references: [id])
+  varian  VarianProduk? @relation(fields: [varianId], references: [id], onDelete: SetNull)
+}
+
+model nota {
+  id         String   @id @default(cuid())
+  buyyer     String
+  jumlahbeli Int
+  tanggal    DateTime
+  fotonota   String?
+  produkId   String
+
+  produk Produk @relation(fields: [produkId], references: [id], onDelete: Cascade)
+}
