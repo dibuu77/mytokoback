@@ -1,22 +1,160 @@
+
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import * as v from "valibot";
-import { prisma } from "@/lib/prisma";
-import { idSchema } from "@/lib/produk"; // Skema validasi ID
-import { produkQuerySchema, createProdukSchema, updateProdukPUTSchema } from "@/lib/produk";
 
+import { prisma } from "@/lib/prisma";
+import cloudinary from "@/lib/cloudinary";
+
+import {
+  idSchema,
+  updateProdukPUTSchema,
+  updateProdukPATCHSchema,
+} from "@/lib/produk";
+
+// ==========================================
+// HELPER: VALIDASI ID
+// ==========================================
+async function validasiId(params) {
+  const { id } = await params;
+  return v.safeParse(idSchema, id);
+}
+
+// ==========================================
+// HELPER: AMBIL BODY JSON / FORMDATA
+// ==========================================
+async function ambilData(request) {
+  const contentType = request.headers.get("content-type") || "";
+
+  if (contentType.includes("multipart/form-data")) {
+    const formData = await request.formData();
+
+    const body = {};
+
+    const fields = [
+      "nama",
+      "deskripsi",
+      "tempat",
+      "harga",
+      "hargabeli",
+      "stok",
+    ];
+
+    for (const field of fields) {
+      const value = formData.get(field);
+
+      if (value !== null) {
+        if (["harga", "hargabeli", "stok"].includes(field)) {
+          body[field] = value === "" ? undefined : Number(value);
+        } else {
+          body[field] = value === "" ? undefined : value;
+        }
+      }
+    }
+
+    return {
+      body,
+      foto: formData.get("foto"),
+    };
+  }
+
+  return {
+    body: await request.json(),
+    foto: null,
+  };
+}
+
+// ==========================================
+// HELPER: UPLOAD FOTO CLOUDINARY
+// ==========================================
+async function uploadFoto(foto, folder = "mytoko") {
+  if (
+    !foto ||
+    typeof foto === "string" ||
+    typeof foto.arrayBuffer !== "function"
+  ) {
+    return null;
+  }
+
+  if (!foto.type.startsWith("image/")) {
+    throw new Error("File harus berupa gambar");
+  }
+
+  if (foto.size > 5 * 1024 * 1024) {
+    throw new Error("Ukuran foto maksimal 5 MB");
+  }
+
+  const buffer = Buffer.from(await foto.arrayBuffer());
+
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { folder },
+      (error, result) => {
+        if (error) reject(error);
+        else resolve(result);
+      }
+    );
+
+    stream.end(buffer);
+  });
+}
+
+// ==========================================
+// HELPER: ERROR PRISMA
+// ==========================================
+function errorResponse(error) {
+  console.error("API PRODUK ERROR:", error);
+
+  if (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2025"
+  ) {
+    return NextResponse.json(
+      { success: false, message: "Produk tidak ditemukan" },
+      { status: 404 }
+    );
+  }
+
+  if (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2002"
+  ) {
+    return NextResponse.json(
+      { success: false, message: "Nama produk sudah digunakan" },
+      { status: 409 }
+    );
+  }
+
+  return NextResponse.json(
+    { success: false, message: error.message || "Terjadi kesalahan server" },
+    { status: 500 }
+  );
+}
+
+// ==========================================
+// GET: DETAIL PRODUK + VARIAN
+// ==========================================
 export async function GET(request, { params }) {
   try {
-    const { id } = await params;
-    const idValidation = v.safeParse(idSchema, id);
+    const idValidation = await validasiId(params);
+
     if (!idValidation.success) {
       return NextResponse.json(
-        { success: false, errors: v.flatten(idValidation.issues).nested },
+        {
+          success: false,
+          errors: v.flatten(idValidation.issues).nested,
+        },
         { status: 400 }
       );
     }
+
     const produk = await prisma.produk.findUnique({
       where: { id: idValidation.output },
+      include: {
+        varians: {
+          orderBy: { createdAt: "desc" },
+        },
+      },
     });
 
     if (!produk) {
@@ -30,151 +168,216 @@ export async function GET(request, { params }) {
       success: true,
       data: produk,
     });
-
   } catch (error) {
-    return NextResponse.json(
-      { success: false, message: "Terjadi kesalahan server" },
-      { status: 500 }
-    );
+    return errorResponse(error);
   }
 }
 
-// ========================================================
-// 1. PUT (Update Menyeluruh - Semua Field Wajib Dikirim)
-// ========================================================
+// ==========================================
+// POST: TAMBAH VARIAN PRODUK
+// Endpoint: POST /api/produk/:id
+// ==========================================
+export async function POST(request, { params }) {
+  try {
+    const idValidation = await validasiId(params);
+
+    if (!idValidation.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          errors: v.flatten(idValidation.issues).nested,
+        },
+        { status: 400 }
+      );
+    }
+
+    // Pastikan produk induk tersedia
+    const produk = await prisma.produk.findUnique({
+      where: { id: idValidation.output },
+    });
+
+    if (!produk) {
+      return NextResponse.json(
+        { success: false, message: "Produk tidak ditemukan" },
+        { status: 404 }
+      );
+    }
+
+    const { body, foto } = await ambilData(request);
+
+    // Validasi nama dan harga varian
+    if (
+      typeof body.nama !== "string" ||
+      body.nama.trim().length < 3 ||
+      body.nama.trim().length > 50
+    ) {
+      return NextResponse.json(
+        { success: false, message: "Nama varian harus 3-50 karakter" },
+        { status: 400 }
+      );
+    }
+
+    if (
+      !Number.isInteger(body.harga) ||
+      body.harga < 1
+    ) {
+      return NextResponse.json(
+        { success: false, message: "Harga varian harus bilangan bulat lebih dari 0" },
+        { status: 400 }
+      );
+    }
+
+    // Upload foto varian jika tersedia
+    const upload = await uploadFoto(foto, "mytoko/varian");
+
+    const varian = await prisma.varianProduk.create({
+      data: {
+        produkId: idValidation.output,
+        nama: body.nama.trim(),
+        harga: body.harga,
+        ...(upload && { fotoUrl: upload.secure_url }),
+      },
+    });
+
+    return NextResponse.json(
+      {
+        success: true,
+        message: "Varian berhasil ditambahkan",
+        data: varian,
+      },
+      { status: 201 }
+    );
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+// ==========================================
+// PUT: UPDATE SELURUH DATA PRODUK
+// ==========================================
 export async function PUT(request, { params }) {
   try {
-    const { id } = await params;
+    const idValidation = await validasiId(params);
 
-    // 1. Validasi ID dari URL
-    const idValidation = v.safeParse(idSchema, id);
     if (!idValidation.success) {
       return NextResponse.json(
-        { success: false, errors: v.flatten(idValidation.issues).nested },
+        {
+          success: false,
+          errors: v.flatten(idValidation.issues).nested,
+        },
         { status: 400 }
       );
     }
 
-    const body = await request.json();
+    const { body, foto } = await ambilData(request);
 
-    // 2. Validasi Body (Semua field wajib ada)
     const bodyValidation = v.safeParse(updateProdukPUTSchema, body);
+
     if (!bodyValidation.success) {
       return NextResponse.json(
-        { success: false, errors: v.flatten(bodyValidation.issues).nested },
+        {
+          success: false,
+          errors: v.flatten(bodyValidation.issues).nested,
+        },
         { status: 400 }
       );
     }
 
-    // 3. Eksekusi Update ke Database
+    const upload = await uploadFoto(foto);
+
+    const data = {
+      ...bodyValidation.output,
+      ...(upload && { fotoUrl: upload.secure_url }),
+    };
+
     const updatedProduk = await prisma.produk.update({
       where: { id: idValidation.output },
-      data: bodyValidation.output,
+      data,
     });
 
     return NextResponse.json({
       success: true,
-      message: "Produk berhasil diperbarui (PUT)",
+      message: "Produk berhasil diperbarui",
       data: updatedProduk,
     });
-
   } catch (error) {
-    // Tangani jika ID tidak ditemukan di database
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
-      return NextResponse.json(
-        { success: false, message: "Produk dengan ID tersebut tidak ditemukan" },
-        { status: 404 }
-      );
-    }
-
-    // Tangani jika nama bentrok / duplikat (@unique)
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      return NextResponse.json(
-        { success: false, message: "Nama produk sudah digunakan produk lain" },
-        { status: 409 }
-      );
-    }
-
-    // Error umum lainnya
-    console.error("DEBUG ERROR PUT:", error);
-    return NextResponse.json(
-      { success: false, message: "Terjadi kesalahan server" },
-      { status: 500 }
-    );
+    return errorResponse(error);
   }
 }
-// ========================================================
-// 2. PATCH (Update Sebagian - Hanya Field Tertentu Saja)
-// ========================================================
+
+// ==========================================
+// PATCH: UPDATE SEBAGIAN DATA PRODUK
+// ==========================================
 export async function PATCH(request, { params }) {
   try {
-    const { id } = await params;
+    const idValidation = await validasiId(params);
 
-    // Validasi ID dari URL
-    const idValidation = v.safeParse(idSchema, id);
     if (!idValidation.success) {
       return NextResponse.json(
-        { success: false, errors: v.flatten(idValidation.issues).nested },
+        {
+          success: false,
+          errors: v.flatten(idValidation.issues).nested,
+        },
         { status: 400 }
       );
     }
 
-    const body = await request.json();
+    const { body, foto } = await ambilData(request);
 
-    // Validasi Body (Field bersifat opsional/partial)
+    if (Object.keys(body).length === 0 && !foto) {
+      return NextResponse.json(
+        { success: false, message: "Tidak ada data yang diperbarui" },
+        { status: 400 }
+      );
+    }
+
     const bodyValidation = v.safeParse(updateProdukPATCHSchema, body);
+
     if (!bodyValidation.success) {
       return NextResponse.json(
-        { success: false, errors: v.flatten(bodyValidation.issues).nested },
+        {
+          success: false,
+          errors: v.flatten(bodyValidation.issues).nested,
+        },
         { status: 400 }
       );
     }
 
-    // Eksekusi Update ke Database
+    const upload = await uploadFoto(foto);
+
+    const data = {
+      ...bodyValidation.output,
+      ...(upload && { fotoUrl: upload.secure_url }),
+    };
+
     const updatedProduk = await prisma.produk.update({
       where: { id: idValidation.output },
-      data: bodyValidation.output,
+      data,
     });
 
     return NextResponse.json({
       success: true,
-      message: "Produk berhasil diperbarui (PATCH)",
+      message: "Produk berhasil diperbarui",
       data: updatedProduk,
     });
-
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
-      return NextResponse.json(
-        { success: false, message: "Produk dengan ID tersebut tidak ditemukan" },
-        { status: 404 }
-      );
-    }
-
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      return NextResponse.json(
-        { success: false, message: "Nama produk sudah digunakan produk lain" },
-        { status: 409 }
-      );
-    }
-
-    return NextResponse.json(
-      { success: false, message: "Terjadi kesalahan server" },
-      { status: 500 }
-    );
+    return errorResponse(error);
   }
 }
 
-// ========================================================
-// 3. DELETE (Hapus Data Berdasarkan ID)
-// ========================================================
+// ==========================================
+// DELETE: HAPUS PRODUK
+// ==========================================
 export async function DELETE(request, { params }) {
   try {
-    const { id } = await params;
+    const idValidation = await validasiId(params);
 
-    const idValidation = v.safeParse(idSchema, id);
     if (!idValidation.success) {
       return NextResponse.json(
-        { success: false, errors: v.flatten(idValidation.issues).nested },
+        {
+          success: false,
+          errors: v.flatten(idValidation.issues).nested,
+        },
         { status: 400 }
       );
     }
@@ -187,20 +390,7 @@ export async function DELETE(request, { params }) {
       success: true,
       message: "Produk berhasil dihapus",
     });
-
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
-      return NextResponse.json(
-        { success: false, message: "Produk tidak ditemukan atau sudah dihapus sebelumnya" },
-        { status: 404 }
-      );
-    }
-
-    return NextResponse.json(
-      { success: false, message: "Terjadi kesalahan server" },
-      { status: 500 }
-    );
+    return errorResponse(error);
   }
 }
-
-
