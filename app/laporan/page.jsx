@@ -1,16 +1,7 @@
-import React from 'react'
-
-export default function page() {
-const [laporan, setlaporan] = useState([]);
-const [first, setfirst] = useState(second);
-const [loadlaporan, setloadlaporan] = useState(false);
-
-const  lihatlaporan = async () => {
-    
+export default function LaporanPage() {
+  return (
+    <div>
+      <h1>Halaman Laporan</h1>
+    </div>
+  );
 }
-
-}
-
-return
-
-
