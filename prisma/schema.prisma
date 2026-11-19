@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -9,17 +6,18 @@ datasource db {
   provider = "postgresql"
 }
 
-// 2. Model User
+// USER
 model User {
-  id        String     @id @default(cuid()) // Disamakan bertipe String (cuid)
-  nama      String
-  email     String     @unique
-  password  String
+  id       String @id @default(cuid())
+  nama     String
+  email    String @unique
+  password String
+
   pesanan   Pesanan[]
-  cartItems CartItem[] // Relasi balik ke CartItem
+  cartItems CartItem[]
 }
 
-// 3. Model Produk
+// PRODUK
 model Produk {
   id        String   @id @default(cuid())
   nama      String   @unique
@@ -36,9 +34,10 @@ model Produk {
   cartItems   CartItem[]
   detailItems DetailPesanan[]
   notas       nota[]
+  itemDrafts  ItemDraft[]
 }
 
-// 4. Model VarianProduk
+// VARIAN PRODUK
 model VarianProduk {
   id        String   @id @default(cuid())
   produkId  String
@@ -52,9 +51,10 @@ model VarianProduk {
   produk      Produk          @relation(fields: [produkId], references: [id], onDelete: Cascade)
   cartItems   CartItem[]
   detailItems DetailPesanan[]
+  itemDrafts  ItemDraft[]
 }
 
-// 5. Model CartItem
+// KERANJANG USER LAMA
 model CartItem {
   id       String  @id @default(cuid())
   userId   String
@@ -67,17 +67,18 @@ model CartItem {
   varian VarianProduk? @relation(fields: [varianId], references: [id], onDelete: SetNull)
 }
 
-// 6. Model Pesanan
+// PESANAN
 model Pesanan {
-  id          String          @id @default(cuid()) // Disamakan bertipe String (cuid)
-  userId      String
+  id        String   @id @default(cuid())
+  userId    String
+  total     Float
+  createdAt DateTime @default(now())
+
   user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  total       Float
-  createdAt   DateTime        @default(now())
-  detailItems DetailPesanan[] // Relasi balik ke DetailPesanan
+  detailItems DetailPesanan[]
 }
 
-// 7. Model DetailPesanan
+// DETAIL PESANAN
 model DetailPesanan {
   id         String  @id @default(cuid())
   pesananId  String
@@ -92,6 +93,7 @@ model DetailPesanan {
   varian  VarianProduk? @relation(fields: [varianId], references: [id], onDelete: SetNull)
 }
 
+// NOTA LAMA
 model nota {
   id         String   @id @default(cuid())
   buyyer     String
@@ -101,4 +103,39 @@ model nota {
   produkId   String
 
   produk Produk @relation(fields: [produkId], references: [id], onDelete: Cascade)
+}
+
+// DRAFT PESANAN
+model DraftPesanan {
+  id        String   @id @default(cuid())
+  status    String   @default("DRAFT")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items ItemDraft[]
+
+  @@index([status])
+}
+
+// ITEM DRAFT
+model ItemDraft {
+  id         String   @id @default(cuid())
+  draftId    String
+  produkId   String
+  varianId   String?
+  namaProduk String
+  namaVarian String?
+  harga      Int
+  jumlah     Int      @default(1)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  draft  DraftPesanan  @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  produk Produk        @relation(fields: [produkId], references: [id], onDelete: Restrict)
+  varian VarianProduk? @relation(fields: [varianId], references: [id], onDelete: Restrict)
+
+  @@index([draftId])
+  @@index([draftId, produkId])
+  @@index([produkId])
+  @@index([varianId])
 }
