@@ -141,3 +141,13 @@ model ItemDraft {
   @@index([produkId])
   @@index([varianId])
 }
+
+model SesiKasir {
+  id          String    @id @default(cuid())
+  modalAwal   Int
+  uangAkhir   Int?
+  totalJual   Int       @default(0)
+  status      String    @default("BUKA")
+  dibukaPada  DateTime  @default(now())
+  ditutupPada DateTime?
+}
