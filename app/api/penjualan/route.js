@@ -133,23 +133,26 @@ export async function POST(request) {
 
 export async function GET() {
   try {
-    const [pesanan, totalTransaksi, hasilTotal] = await Promise.all([
-      prisma.pesanan.findMany({
-        orderBy: { createdAt: "desc" },
-        include: {
-          detailItems: {
-            include: {
-              produk: true,
-              varian: true,
+    const [pesanan, totalTransaksi, hasilTotal] =
+      await Promise.all([
+        prisma.pesanan.findMany({
+          orderBy: { createdAt: "desc" },
+          include: {
+            detailItems: {
+              include: {
+                produk: true,
+                varian: true,
+              },
             },
           },
-        },
-      }),
-      prisma.pesanan.count(),
-      prisma.pesanan.aggregate({
-        _sum: { total: true },
-      }),
-    ]);
+        }),
+
+        prisma.pesanan.count(),
+
+        prisma.pesanan.aggregate({
+          _sum: { total: true },
+        }),
+      ]);
 
     return NextResponse.json({
       success: true,
@@ -161,10 +164,12 @@ export async function GET() {
     console.error("GET PENJUALAN ERROR:", error);
 
     return NextResponse.json(
-      { success: false, message: "Gagal mengambil data penjualan" },
+      {
+        success: false,
+        message: "Gagal mengambil data penjualan",
+      },
       { status: 500 }
     );
   }
 }
-
 
