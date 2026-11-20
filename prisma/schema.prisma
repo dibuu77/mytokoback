@@ -107,14 +107,16 @@ model nota {
 
 // DRAFT PESANAN
 model DraftPesanan {
-  id        String   @id @default(cuid())
-  status    String   @default("DRAFT")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          String   @id @default(cuid())
+  namaPembeli String?
+  status      String   @default("DRAFT")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   items ItemDraft[]
 
   @@index([status])
+  @@index([namaPembeli, status])
 }
 
 // ITEM DRAFT
