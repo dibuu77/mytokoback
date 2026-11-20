@@ -69,12 +69,13 @@ model CartItem {
 
 // PESANAN
 model Pesanan {
-  id        String   @id @default(cuid())
-  userId    String
-  total     Float
-  createdAt DateTime @default(now())
+  id          String   @id @default(cuid())
+  userId      String?
+  namaPembeli String
+  total       Float
+  createdAt   DateTime @default(now())
 
-  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
   detailItems DetailPesanan[]
 }
 
