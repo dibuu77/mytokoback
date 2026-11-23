@@ -139,18 +139,36 @@ async function simpanPenjualan(tx, {
   });
 }
 
-// GET: Riwayat dan ringkasan seluruh penjualan
+
+// GET: Seluruh riwayat penjualan + ringkasan sesi kasir aktif
 export async function GET() {
   try {
+    const sesiAktif = await prisma.sesiKasir.findFirst({
+      where: { status: "BUKA" },
+      orderBy: { dibukaPada: "desc" },
+      select: { id: true },
+    });
+
     const [data, totalTransaksi, aggregate] = await Promise.all([
+      // Riwayat tetap mengambil semua transaksi
       prisma.pesanan.findMany({
         orderBy: { createdAt: "desc" },
         include: detailInclude,
       }),
-      prisma.pesanan.count(),
-      prisma.pesanan.aggregate({
-        _sum: { total: true },
-      }),
+
+      // Ringkasan hanya menghitung transaksi sesi aktif
+      sesiAktif
+        ? prisma.pesanan.count({
+            where: { sesiKasirId: sesiAktif.id },
+          })
+        : Promise.resolve(0),
+
+      sesiAktif
+        ? prisma.pesanan.aggregate({
+            where: { sesiKasirId: sesiAktif.id },
+            _sum: { total: true },
+          })
+        : Promise.resolve({ _sum: { total: null } }),
     ]);
 
     return NextResponse.json({
@@ -168,6 +186,7 @@ export async function GET() {
     );
   }
 }
+
 
 // POST: Checkout Draft atau transaksi langsung
 export async function POST(request) {
