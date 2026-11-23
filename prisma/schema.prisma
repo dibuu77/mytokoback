@@ -168,7 +168,5 @@ model SesiKasir {
   status         String    @default("BUKA")
   dibukaPada     DateTime  @default(now())
   ditutupPada    DateTime?
-
-  // Relasi transaksi penjualan
-  pesanan Pesanan[]
+  pesanan        Pesanan[]
 }
