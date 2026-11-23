@@ -22,6 +22,9 @@ export async function GET() {
             kembalian: true,
             createdAt: true,
             detailItems: {
+              orderBy: {
+                id: "asc",
+              },
               select: {
                 id: true,
                 namaProduk: true,
@@ -51,13 +54,16 @@ export async function GET() {
           ? null
           : Number(item.uangAkhir);
 
-      const selisih =
-        item.status === "TUTUP"
-          ? Number(
-              item.selisih ??
-              uangAkhir - uangSeharusnya
-            )
-          : null;
+      let selisih = null;
+
+      if (item.status === "TUTUP") {
+        selisih =
+          item.selisih != null
+            ? Number(item.selisih)
+            : uangAkhir != null
+              ? uangAkhir - uangSeharusnya
+              : null;
+      }
 
       return {
         id: item.id,
@@ -79,12 +85,12 @@ export async function GET() {
       data,
     });
   } catch (error) {
-    console.error("GET RIWAYAT KASIR:", error);
+    console.error("GET RIWAYAT KASIR ERROR:", error);
 
     return NextResponse.json(
       {
         success: false,
-        message: "Gagal mengambil riwayat kasir",
+        message: "Gagal mengambil riwayat kasir.",
       },
       { status: 500 }
     );

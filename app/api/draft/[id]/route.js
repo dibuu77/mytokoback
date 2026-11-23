@@ -105,25 +105,17 @@ export async function PATCH(request, { params }) {
           throw new Error("ITEM_TIDAK_DITEMUKAN");
         }
 
-        // Ambil produk
-        const produk = await tx.produk.findUnique({
-          where: {
-            id: item.produkId,
-          },
-        });
+        // Ambil stok produk atau varian
+        let stok;
 
-        if (!produk) {
-          throw new Error("PRODUK_TIDAK_DITEMUKAN");
-        }
-
-        let stok = produk.stok;
-
-        // Jika menggunakan varian, ambil stok varian
         if (item.varianId) {
           const varian = await tx.varianProduk.findFirst({
             where: {
               id: item.varianId,
               produkId: item.produkId,
+            },
+            select: {
+              stok: true,
             },
           });
 
@@ -132,17 +124,36 @@ export async function PATCH(request, { params }) {
           }
 
           stok = varian.stok;
+        } else {
+          const produk = await tx.produk.findUnique({
+            where: {
+              id: item.produkId,
+            },
+            select: {
+              stok: true,
+            },
+          });
+
+          if (!produk) {
+            throw new Error("PRODUK_TIDAK_DITEMUKAN");
+          }
+
+          stok = produk.stok;
         }
 
-        // Hitung jumlah pada baris lain
-        // dengan produk dan varian yang sama
+        // Hitung jumlah item yang sama pada seluruh
+        // Draft aktif, kecuali item yang sedang diedit
         const jumlahLain = await tx.itemDraft.aggregate({
           where: {
-            draftId: id,
             produkId: item.produkId,
             varianId: item.varianId,
             id: {
               not: itemId,
+            },
+            draft: {
+              is: {
+                status: "DRAFT",
+              },
             },
           },
           _sum: {
@@ -155,12 +166,15 @@ export async function PATCH(request, { params }) {
 
         const totalJumlah = jumlahSudahAda + jumlah;
 
-        // Pastikan seluruh baris tidak melebihi stok
+        // Pastikan total seluruh Draft tidak melebihi stok
         if (totalJumlah > stok) {
+          const maksimal = Math.max(
+            0,
+            stok - jumlahSudahAda
+          );
+
           throw new Error(
-            `Stok tidak cukup. Maksimal jumlah pada baris ini: ${
-              Math.max(0, stok - jumlahSudahAda)
-            }.`
+            `Stok tidak cukup. Maksimal jumlah produk ini adalah ${maksimal}.`
           );
         }
 
@@ -175,7 +189,6 @@ export async function PATCH(request, { params }) {
           },
         });
 
-        // Perbarui aktivitas Draft
         await tx.draftPesanan.update({
           where: {
             id,
@@ -292,13 +305,23 @@ export async function DELETE(request, { params }) {
           },
         });
 
-        // Perbarui aktivitas Draft
+        // Periksa apakah masih ada item dalam Draft
+        const sisaItem = await tx.itemDraft.count({
+          where: {
+            draftId: id,
+          },
+        });
+
+        // Jika kosong, tandai Draft selesai
         await tx.draftPesanan.update({
           where: {
             id,
           },
           data: {
             updatedAt: new Date(),
+            ...(sisaItem === 0
+              ? { status: "SELESAI" }
+              : {}),
           },
         });
       },

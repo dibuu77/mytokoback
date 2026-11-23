@@ -52,12 +52,16 @@ export async function GET() {
       ),
     }));
 
-    return NextResponse.json(hasil);
+    return NextResponse.json({
+      success: true,
+      data: hasil,
+    });
   } catch (error) {
     console.error("GET DRAFT ERROR:", error);
 
     return NextResponse.json(
       {
+        success: false,
         message: "Gagal mengambil data Draft.",
       },
       { status: 500 }
@@ -70,17 +74,23 @@ export async function POST(request) {
   try {
     const body = await request.json();
 
-    const { namaPembeli, produkId, varianId, jumlah } = body;
+    const namaPembeli = body.namaPembeli?.trim();
+    const { produkId, varianId, jumlah } = body;
 
     if (
       typeof namaPembeli !== "string" ||
-      !namaPembeli.trim() ||
-      !produkId ||
+      !namaPembeli ||
+      typeof produkId !== "string" ||
+      !produkId.trim() ||
+      (varianId !== undefined &&
+        varianId !== null &&
+        (typeof varianId !== "string" || !varianId.trim())) ||
       !Number.isSafeInteger(jumlah) ||
       jumlah < 1
     ) {
       return NextResponse.json(
         {
+          success: false,
           message: "Data Draft tidak valid.",
         },
         { status: 400 }
@@ -97,16 +107,14 @@ export async function POST(request) {
         });
 
         if (!produk || !produk.isAktif) {
-          throw new Error(
-            "Produk tidak ditemukan atau tidak aktif."
-          );
+          throw new Error("PRODUK_TIDAK_DITEMUKAN");
         }
 
         let harga = produk.harga;
         let stok = produk.stok;
         let namaVarian = null;
 
-        // Jika menggunakan varian
+        // Validasi varian jika dipilih
         if (varianId) {
           const varian = await tx.varianProduk.findFirst({
             where: {
@@ -116,7 +124,7 @@ export async function POST(request) {
           });
 
           if (!varian) {
-            throw new Error("Varian produk tidak ditemukan.");
+            throw new Error("VARIAN_TIDAK_DITEMUKAN");
           }
 
           harga = varian.harga;
@@ -124,31 +132,49 @@ export async function POST(request) {
           namaVarian = varian.nama;
         }
 
-        // Cari atau buat Draft berdasarkan nama pembeli
+        if (
+          !Number.isSafeInteger(harga) ||
+          harga < 0 ||
+          !Number.isSafeInteger(stok) ||
+          stok < 0
+        ) {
+          throw new Error("DATA_PRODUK_TIDAK_VALID");
+        }
+
+        // Cari Draft aktif berdasarkan nama pembeli
         let draft = await tx.draftPesanan.findFirst({
           where: {
             namaPembeli: {
-              equals: namaPembeli.trim(),
+              equals: namaPembeli,
               mode: "insensitive",
             },
             status: "DRAFT",
           },
+          orderBy: {
+            updatedAt: "desc",
+          },
         });
 
+        // Buat Draft jika belum tersedia
         if (!draft) {
           draft = await tx.draftPesanan.create({
             data: {
-              namaPembeli: namaPembeli.trim(),
+              namaPembeli,
             },
           });
         }
 
-        // Hitung seluruh jumlah produk dalam Draft
+        // Hitung seluruh jumlah produk/varian di semua Draft aktif.
+        // Perhitungan mencakup tanggal berbeda dan harga berbeda.
         const jumlahLama = await tx.itemDraft.aggregate({
           where: {
-            draftId: draft.id,
             produkId,
             varianId: varianId || null,
+            draft: {
+              is: {
+                status: "DRAFT",
+              },
+            },
           },
           _sum: {
             jumlah: true,
@@ -160,15 +186,15 @@ export async function POST(request) {
 
         if (totalJumlah > stok) {
           throw new Error(
-            `Stok tidak mencukupi. Stok tersedia: ${stok}.`
+            `STOK_TIDAK_CUKUP:${stok}:${totalJumlah}`
           );
         }
 
-        // Ambil batas tanggal hari ini berdasarkan WIB
+        // Batas tanggal berdasarkan WIB
         const { start, end } = getBatasTanggalWIB();
 
-        // Cari item dengan produk, varian, harga,
-        // dan tanggal yang sama
+        // Cari item yang sama:
+        // Draft, produk, varian, harga, dan tanggal WIB
         const itemLama = await tx.itemDraft.findFirst({
           where: {
             draftId: draft.id,
@@ -186,7 +212,6 @@ export async function POST(request) {
 
         if (itemLama) {
           // Item sama: tambahkan jumlah
-          // Harga dan tanggal tetap dipertahankan
           item = await tx.itemDraft.update({
             where: {
               id: itemLama.id,
@@ -210,7 +235,7 @@ export async function POST(request) {
           });
         }
 
-        // Perbarui aktivitas Draft agar urutan GET akurat
+        // Perbarui aktivitas Draft
         await tx.draftPesanan.update({
           where: {
             id: draft.id,
@@ -220,7 +245,11 @@ export async function POST(request) {
           },
         });
 
-        return item;
+        return {
+          ...item,
+          draftId: draft.id,
+          namaPembeli: draft.namaPembeli,
+        };
       },
       {
         isolationLevel: "Serializable",
@@ -229,6 +258,7 @@ export async function POST(request) {
 
     return NextResponse.json(
       {
+        success: true,
         message: "Produk berhasil ditambahkan ke Draft.",
         item: hasil,
       },
@@ -240,6 +270,7 @@ export async function POST(request) {
     if (error.code === "P2034") {
       return NextResponse.json(
         {
+          success: false,
           message:
             "Draft sedang mengalami perubahan. Silakan coba kembali.",
         },
@@ -247,11 +278,41 @@ export async function POST(request) {
       );
     }
 
+    if (error.message.startsWith("STOK_TIDAK_CUKUP:")) {
+      const [, stok, total] = error.message.split(":");
+
+      return NextResponse.json(
+        {
+          success: false,
+          message: `Stok tidak mencukupi. Stok tersedia: ${stok}, sedangkan total permintaan Draft: ${total}.`,
+        },
+        { status: 409 }
+      );
+    }
+
+    const errors = {
+      PRODUK_TIDAK_DITEMUKAN: [
+        "Produk tidak ditemukan atau tidak aktif.",
+        404,
+      ],
+      VARIAN_TIDAK_DITEMUKAN: [
+        "Varian produk tidak ditemukan.",
+        404,
+      ],
+      DATA_PRODUK_TIDAK_VALID: [
+        "Data harga atau stok produk tidak valid.",
+        400,
+      ],
+    };
+
+    const known = errors[error.message];
+
     return NextResponse.json(
       {
-        message: error.message || "Gagal menambahkan produk.",
+        success: false,
+        message: known?.[0] || "Gagal menambahkan produk ke Draft.",
       },
-      { status: 400 }
+      { status: known?.[1] || 400 }
     );
   }
 }

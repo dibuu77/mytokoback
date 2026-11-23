@@ -2,6 +2,23 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 
+function validasiNominal(value) {
+  if (
+    (typeof value !== "number" && typeof value !== "string") ||
+    value === ""
+  ) {
+    return null;
+  }
+
+  const nominal = Number(value);
+
+  if (!Number.isSafeInteger(nominal) || nominal < 0) {
+    return null;
+  }
+
+  return nominal;
+}
+
 // GET: Cek sesi aktif atau sesi terakhir
 export async function GET() {
   try {
@@ -21,6 +38,7 @@ export async function GET() {
 
     if (!sesi) {
       return NextResponse.json({
+        success: true,
         kasirBuka: false,
         sesi: null,
       });
@@ -30,10 +48,11 @@ export async function GET() {
       ? Number(sesi.modalAwal) + Number(sesi.totalJual)
       : Number(
           sesi.uangSeharusnya ??
-          Number(sesi.modalAwal) + Number(sesi.totalJual)
+            Number(sesi.modalAwal) + Number(sesi.totalJual)
         );
 
     return NextResponse.json({
+      success: true,
       kasirBuka,
       sesi: {
         ...sesi,
@@ -41,10 +60,13 @@ export async function GET() {
       },
     });
   } catch (error) {
-    console.error("GET Sesi Kasir:", error);
+    console.error("GET SESI KASIR ERROR:", error);
 
     return NextResponse.json(
-      { message: "Gagal mengambil status kasir" },
+      {
+        success: false,
+        message: "Gagal mengambil status kasir.",
+      },
       { status: 500 }
     );
   }
@@ -53,18 +75,15 @@ export async function GET() {
 // POST: Membuka sesi kasir
 export async function POST(request) {
   try {
-    const { modalAwal } = await request.json();
-    const nominal = Number(modalAwal);
+    const body = await request.json();
+    const nominal = validasiNominal(body.modalAwal);
 
-    if (
-      modalAwal === undefined ||
-      modalAwal === null ||
-      modalAwal === "" ||
-      !Number.isSafeInteger(nominal) ||
-      nominal < 0
-    ) {
+    if (nominal === null) {
       return NextResponse.json(
-        { message: "Modal awal tidak valid" },
+        {
+          success: false,
+          message: "Modal awal tidak valid.",
+        },
         { status: 400 }
       );
     }
@@ -87,35 +106,48 @@ export async function POST(request) {
           },
         });
       },
-      { isolationLevel: "Serializable" }
+      {
+        isolationLevel: "Serializable",
+      }
     );
 
     return NextResponse.json(
       {
-        message: "Kasir berhasil dibuka",
+        success: true,
+        message: "Kasir berhasil dibuka.",
         sesi,
       },
       { status: 201 }
     );
   } catch (error) {
-    console.error("POST Sesi Kasir:", error);
+    console.error("POST SESI KASIR ERROR:", error);
 
     if (error.message === "KASIR_SUDAH_BUKA") {
       return NextResponse.json(
-        { message: "Kasir masih dalam keadaan buka" },
+        {
+          success: false,
+          message: "Kasir masih dalam keadaan buka.",
+        },
         { status: 409 }
       );
     }
 
     if (error.code === "P2034") {
       return NextResponse.json(
-        { message: "Terjadi konflik transaksi, silakan coba lagi" },
+        {
+          success: false,
+          message:
+            "Terjadi konflik transaksi. Silakan coba kembali.",
+        },
         { status: 409 }
       );
     }
 
     return NextResponse.json(
-      { message: "Gagal membuka kasir" },
+      {
+        success: false,
+        message: "Gagal membuka kasir.",
+      },
       { status: 500 }
     );
   }
@@ -124,18 +156,15 @@ export async function POST(request) {
 // PATCH: Menutup sesi kasir
 export async function PATCH(request) {
   try {
-    const { uangAkhir } = await request.json();
-    const nominal = Number(uangAkhir);
+    const body = await request.json();
+    const nominal = validasiNominal(body.uangAkhir);
 
-    if (
-      uangAkhir === undefined ||
-      uangAkhir === null ||
-      uangAkhir === "" ||
-      !Number.isSafeInteger(nominal) ||
-      nominal < 0
-    ) {
+    if (nominal === null) {
       return NextResponse.json(
-        { message: "Uang akhir tidak valid" },
+        {
+          success: false,
+          message: "Uang akhir tidak valid.",
+        },
         { status: 400 }
       );
     }
@@ -155,6 +184,7 @@ export async function PATCH(request) {
           Number(sesi.modalAwal) + Number(sesi.totalJual);
 
         const selisih = nominal - uangSeharusnya;
+        const ditutupPada = new Date();
 
         const update = await tx.sesiKasir.updateMany({
           where: {
@@ -166,7 +196,7 @@ export async function PATCH(request) {
             uangSeharusnya,
             selisih,
             status: "TUTUP",
-            ditutupPada: new Date(),
+            ditutupPada,
           },
         });
 
@@ -180,21 +210,28 @@ export async function PATCH(request) {
           uangSeharusnya,
           selisih,
           status: "TUTUP",
+          ditutupPada,
         };
       },
-      { isolationLevel: "Serializable" }
+      {
+        isolationLevel: "Serializable",
+      }
     );
 
     return NextResponse.json({
-      message: "Kasir berhasil ditutup",
+      success: true,
+      message: "Kasir berhasil ditutup.",
       sesi: hasil,
     });
   } catch (error) {
-    console.error("PATCH Sesi Kasir:", error);
+    console.error("PATCH SESI KASIR ERROR:", error);
 
     if (error.message === "SESI_TIDAK_ADA") {
       return NextResponse.json(
-        { message: "Tidak ada sesi kasir yang aktif" },
+        {
+          success: false,
+          message: "Tidak ada sesi kasir yang aktif.",
+        },
         { status: 404 }
       );
     }
@@ -205,15 +242,19 @@ export async function PATCH(request) {
     ) {
       return NextResponse.json(
         {
+          success: false,
           message:
-            "Sesi kasir berubah atau sudah diproses. Silakan coba lagi.",
+            "Sesi kasir berubah atau sudah diproses. Silakan coba kembali.",
         },
         { status: 409 }
       );
     }
 
     return NextResponse.json(
-      { message: "Gagal menutup kasir" },
+      {
+        success: false,
+        message: "Gagal menutup kasir.",
+      },
       { status: 500 }
     );
   }
