@@ -53,6 +53,7 @@ model VarianProduk {
   cartItems   CartItem[]
   detailItems DetailPesanan[]
   itemDrafts  ItemDraft[]
+  notas       nota[]
 }
 
 // KERANJANG USER LAMA
@@ -103,8 +104,10 @@ model nota {
   tanggal    DateTime
   fotonota   String?
   produkId   String
+  varianId   String?
 
-  produk Produk @relation(fields: [produkId], references: [id], onDelete: Cascade)
+  produk Produk        @relation(fields: [produkId], references: [id], onDelete: Cascade)
+  varian VarianProduk? @relation(fields: [varianId], references: [id], onDelete: SetNull)
 }
 
 // DRAFT PESANAN

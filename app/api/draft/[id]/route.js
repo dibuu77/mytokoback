@@ -37,14 +37,16 @@ export async function GET(request, { params }) {
       data: { ...draft, total },
     });
   } catch (error) {
+    console.error("GET DETAIL DRAFT ERROR:", error);
+
     return NextResponse.json(
-      { success: false, message: error.message },
+      { success: false, message: "Gagal mengambil detail Draft" },
       { status: 500 }
     );
   }
 }
 
-// PATCH: Mengubah jumlah produk dalam draft
+// PATCH: Mengubah jumlah produk dalam Draft
 export async function PATCH(request, { params }) {
   try {
     const { id } = await params;
@@ -58,18 +60,26 @@ export async function PATCH(request, { params }) {
     }
 
     const hasil = await prisma.$transaction(async (tx) => {
+      // Pastikan Draft masih aktif
       const draft = await tx.draftPesanan.findFirst({
         where: { id, status: "DRAFT" },
       });
 
       if (!draft) throw new Error("Draft tidak ditemukan");
 
+      // Ambil item yang akan diedit
       const item = await tx.itemDraft.findFirst({
-        where: { id: itemId, draftId: id },
+        where: {
+          id: itemId,
+          draftId: id,
+        },
       });
 
-      if (!item) throw new Error("Produk tidak ditemukan dalam draft");
+      if (!item) {
+        throw new Error("Produk tidak ditemukan dalam Draft");
+      }
 
+      // Ambil produk
       const produk = await tx.produk.findUnique({
         where: { id: item.produkId },
       });
@@ -78,6 +88,7 @@ export async function PATCH(request, { params }) {
 
       let stok = produk.stok;
 
+      // Jika item menggunakan varian, ambil stok varian
       if (item.varianId) {
         const varian = await tx.varianProduk.findFirst({
           where: {
@@ -91,10 +102,34 @@ export async function PATCH(request, { params }) {
         stok = varian.stok;
       }
 
-      if (jumlah > stok) {
-        throw new Error(`Stok tidak cukup. Stok tersedia: ${stok}`);
+      // Hitung jumlah produk pada baris lain
+      // dengan produk dan varian yang sama
+      const jumlahLain = await tx.itemDraft.aggregate({
+        where: {
+          draftId: id,
+          produkId: item.produkId,
+          varianId: item.varianId,
+          id: { not: itemId },
+        },
+        _sum: {
+          jumlah: true,
+        },
+      });
+
+      const totalJumlah =
+        (jumlahLain._sum.jumlah || 0) + jumlah;
+
+      // Pastikan total seluruh baris tidak melebihi stok
+      if (totalJumlah > stok) {
+        throw new Error(
+          `Stok tidak cukup. Maksimal jumlah pada baris ini: ${
+            stok - (jumlahLain._sum.jumlah || 0)
+          }`
+        );
       }
 
+      // Ubah jumlah saja.
+      // Harga dan tanggal item tetap dipertahankan.
       return await tx.itemDraft.update({
         where: { id: itemId },
         data: { jumlah },
@@ -107,6 +142,8 @@ export async function PATCH(request, { params }) {
       data: hasil,
     });
   } catch (error) {
+    console.error("PATCH DETAIL DRAFT ERROR:", error);
+
     return NextResponse.json(
       { success: false, message: error.message },
       { status: 400 }
@@ -114,7 +151,7 @@ export async function PATCH(request, { params }) {
   }
 }
 
-// DELETE: Menghapus produk dari draft
+// DELETE: Menghapus produk dari Draft
 export async function DELETE(request, { params }) {
   try {
     const { id } = await params;
@@ -129,17 +166,27 @@ export async function DELETE(request, { params }) {
     }
 
     await prisma.$transaction(async (tx) => {
+      // Pastikan Draft masih aktif
       const draft = await tx.draftPesanan.findFirst({
-        where: { id, status: "DRAFT" },
+        where: {
+          id,
+          status: "DRAFT",
+        },
       });
 
       if (!draft) throw new Error("Draft tidak ditemukan");
 
+      // Pastikan item merupakan bagian dari Draft tersebut
       const item = await tx.itemDraft.findFirst({
-        where: { id: itemId, draftId: id },
+        where: {
+          id: itemId,
+          draftId: id,
+        },
       });
 
-      if (!item) throw new Error("Produk tidak ditemukan");
+      if (!item) {
+        throw new Error("Produk tidak ditemukan dalam Draft");
+      }
 
       await tx.itemDraft.delete({
         where: { id: itemId },
@@ -148,9 +195,11 @@ export async function DELETE(request, { params }) {
 
     return NextResponse.json({
       success: true,
-      message: "Produk berhasil dihapus dari draft",
+      message: "Produk berhasil dihapus dari Draft",
     });
   } catch (error) {
+    console.error("DELETE DETAIL DRAFT ERROR:", error);
+
     return NextResponse.json(
       { success: false, message: error.message },
       { status: 400 }

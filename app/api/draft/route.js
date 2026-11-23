@@ -2,14 +2,29 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 
-export const dynamic = "force-dynamic";
+// Menghitung batas tanggal berdasarkan WIB (UTC+7)
+function getBatasTanggalWIB() {
+  const now = new Date();
+  const wib = new Date(now.getTime() + 7 * 60 * 60 * 1000);
 
-// GET: Mengambil semua daftar draft aktif
+  const start = new Date(
+    Date.UTC(
+      wib.getUTCFullYear(),
+      wib.getUTCMonth(),
+      wib.getUTCDate()
+    ) - 7 * 60 * 60 * 1000
+  );
+
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+
+  return { start, end };
+}
+
+// GET: Menampilkan semua Draft aktif
 export async function GET() {
   try {
     const drafts = await prisma.draftPesanan.findMany({
       where: { status: "DRAFT" },
-      orderBy: { updatedAt: "desc" },
       include: {
         items: {
           include: {
@@ -19,39 +34,34 @@ export async function GET() {
           orderBy: { createdAt: "asc" },
         },
       },
+      orderBy: { updatedAt: "desc" },
     });
 
-    const data = drafts.map((draft) => ({
+    const hasil = drafts.map((draft) => ({
       ...draft,
       total: draft.items.reduce(
-        (sum, item) => sum + item.harga * item.jumlah,
+        (total, item) => total + item.harga * item.jumlah,
         0
       ),
     }));
 
-    return NextResponse.json({
-      success: true,
-      data,
-    });
+    return NextResponse.json(hasil);
   } catch (error) {
+    console.error("GET DRAFT ERROR:", error);
+
     return NextResponse.json(
-      { success: false, message: error.message },
+      { message: "Gagal mengambil data Draft" },
       { status: 500 }
     );
   }
 }
 
-// POST: Menambahkan produk ke draft pembeli
+// POST: Menambahkan produk ke Draft
 export async function POST(request) {
   try {
     const body = await request.json();
 
-    const {
-      namaPembeli,
-      produkId,
-      varianId = null,
-      jumlah = 1,
-    } = body;
+    const { namaPembeli, produkId, varianId, jumlah } = body;
 
     if (
       !namaPembeli?.trim() ||
@@ -60,28 +70,28 @@ export async function POST(request) {
       jumlah < 1
     ) {
       return NextResponse.json(
-        { success: false, message: "Nama pembeli atau data produk tidak valid" },
+        { message: "Data Draft tidak valid" },
         { status: 400 }
       );
     }
 
-    const nama = namaPembeli.trim();
-
     const hasil = await prisma.$transaction(async (tx) => {
+      // Ambil produk
       const produk = await tx.produk.findUnique({
         where: { id: produkId },
       });
 
-      if (!produk) {
-        throw new Error("Produk tidak ditemukan");
+      if (!produk || !produk.isAktif) {
+        throw new Error("Produk tidak ditemukan atau tidak aktif");
       }
 
-      let varian = null;
       let harga = produk.harga;
       let stok = produk.stok;
+      let namaVarian = null;
 
+      // Jika menggunakan varian
       if (varianId) {
-        varian = await tx.varianProduk.findFirst({
+        const varian = await tx.varianProduk.findFirst({
           where: {
             id: varianId,
             produkId,
@@ -89,82 +99,108 @@ export async function POST(request) {
         });
 
         if (!varian) {
-          throw new Error("Varian tidak ditemukan");
+          throw new Error("Varian produk tidak ditemukan");
         }
 
         harga = varian.harga;
         stok = varian.stok;
+        namaVarian = varian.nama;
       }
 
-      // Cari draft aktif milik pembeli
+      // Cari atau buat Draft berdasarkan nama pembeli
       let draft = await tx.draftPesanan.findFirst({
         where: {
           namaPembeli: {
-            equals: nama,
+            equals: namaPembeli.trim(),
             mode: "insensitive",
           },
           status: "DRAFT",
         },
-        orderBy: { createdAt: "desc" },
       });
 
-      // Jika belum ada, buat draft baru
       if (!draft) {
         draft = await tx.draftPesanan.create({
           data: {
-            namaPembeli: nama,
-            status: "DRAFT",
+            namaPembeli: namaPembeli.trim(),
           },
         });
       }
 
-      // Cari produk yang sama di draft pembeli
+      // Hitung seluruh jumlah produk dalam Draft
+      const jumlahLama = await tx.itemDraft.aggregate({
+        where: {
+          draftId: draft.id,
+          produkId,
+          varianId: varianId || null,
+        },
+        _sum: { jumlah: true },
+      });
+
+      const totalJumlah =
+        (jumlahLama._sum.jumlah || 0) + jumlah;
+
+      if (totalJumlah > stok) {
+        throw new Error(
+          `Stok tidak mencukupi. Stok tersedia: ${stok}`
+        );
+      }
+
+      // Ambil batas tanggal hari ini berdasarkan WIB
+      const { start, end } = getBatasTanggalWIB();
+
+      // Cari item dengan produk, varian, harga,
+      // dan tanggal yang sama
       const itemLama = await tx.itemDraft.findFirst({
         where: {
           draftId: draft.id,
           produkId,
-          varianId,
+          varianId: varianId || null,
+          harga,
+          createdAt: {
+            gte: start,
+            lt: end,
+          },
         },
       });
 
-      const jumlahBaru = (itemLama?.jumlah || 0) + jumlah;
-
-      if (jumlahBaru > stok) {
-        throw new Error(`Stok tidak cukup. Stok tersedia: ${stok}`);
-      }
-
-      let item;
-
       if (itemLama) {
-        item = await tx.itemDraft.update({
+        // Produk, varian, harga, dan tanggal sama:
+        // tambah jumlah tanpa mengubah harga
+        return await tx.itemDraft.update({
           where: { id: itemLama.id },
-          data: { jumlah: jumlahBaru },
-        });
-      } else {
-        item = await tx.itemDraft.create({
           data: {
-            draftId: draft.id,
-            produkId,
-            varianId,
-            namaProduk: produk.nama,
-            namaVarian: varian?.nama || null,
-            harga,
-            jumlah,
+            jumlah: itemLama.jumlah + jumlah,
           },
         });
       }
 
-      return { draft, item };
+      // Jika tidak ditemukan:
+      // buat baris baru dengan harga saat penambahan
+      return await tx.itemDraft.create({
+        data: {
+          draftId: draft.id,
+          produkId,
+          varianId: varianId || null,
+          namaProduk: produk.nama,
+          namaVarian,
+          harga,
+          jumlah,
+        },
+      });
     });
 
-    return NextResponse.json({
-      success: true,
-      message: "Produk berhasil ditambahkan ke draft pembeli",
-      data: hasil,
-    });
-  } catch (error) {
     return NextResponse.json(
-      { success: false, message: error.message },
+      {
+        message: "Produk berhasil ditambahkan ke Draft",
+        item: hasil,
+      },
+      { status: 201 }
+    );
+  } catch (error) {
+    console.error("POST DRAFT ERROR:", error);
+
+    return NextResponse.json(
+      { message: error.message || "Gagal menambahkan produk" },
       { status: 400 }
     );
   }

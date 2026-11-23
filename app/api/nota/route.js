@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-// GET: Ambil nota, bisa difilter berdasarkan produkId
+// GET: Ambil nota pembelian
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -30,6 +30,7 @@ export async function GET(request) {
     });
   } catch (error) {
     console.error("GET Nota:", error);
+
     return NextResponse.json(
       { success: false, message: "Gagal mengambil data nota" },
       { status: 500 }
@@ -37,14 +38,20 @@ export async function GET(request) {
   }
 }
 
-// POST: Tambah nota pembelian
+// POST: Tambah nota pembelian dan stok produk
 export async function POST(request) {
   try {
     const body = await request.json();
 
     const { produkId, buyyer, jumlahbeli, tanggal, fotonota } = body;
 
-    if (!produkId || !buyyer?.trim() || !jumlahbeli || !tanggal) {
+    if (
+      !produkId ||
+      !buyyer?.trim() ||
+      jumlahbeli === undefined ||
+      jumlahbeli === null ||
+      !tanggal
+    ) {
       return NextResponse.json(
         { success: false, message: "Lengkapi semua data wajib" },
         { status: 400 }
@@ -54,7 +61,7 @@ export async function POST(request) {
     const jumlah = Number(jumlahbeli);
     const tanggalNota = new Date(tanggal);
 
-    if (!Number.isInteger(jumlah) || jumlah < 1) {
+    if (!Number.isSafeInteger(jumlah) || jumlah < 1) {
       return NextResponse.json(
         { success: false, message: "Jumlah pembelian minimal 1" },
         { status: 400 }
@@ -68,47 +75,78 @@ export async function POST(request) {
       );
     }
 
-    const produk = await prisma.produk.findUnique({
-      where: { id: produkId },
+    const hasil = await prisma.$transaction(async (tx) => {
+      const produk = await tx.produk.findUnique({
+        where: { id: produkId },
+        select: { id: true },
+      });
+
+      if (!produk) {
+        throw new Error("PRODUK_NOT_FOUND");
+      }
+
+      // Simpan nota pembelian
+      const notaBaru = await tx.nota.create({
+        data: {
+          produkId,
+          buyyer: buyyer.trim(),
+          jumlahbeli: jumlah,
+          tanggal: tanggalNota,
+          fotonota: fotonota?.trim() || null,
+        },
+        include: {
+          produk: {
+            select: {
+              id: true,
+              nama: true,
+            },
+          },
+        },
+      });
+
+      // Tambahkan stok produk
+      await tx.produk.update({
+        where: { id: produkId },
+        data: {
+          stok: {
+            increment: jumlah,
+          },
+        },
+      });
+
+      // Ambil stok terbaru
+      const produkTerbaru = await tx.produk.findUnique({
+        where: { id: produkId },
+        select: { stok: true },
+      });
+
+      return {
+        nota: notaBaru,
+        stokTerbaru: produkTerbaru.stok,
+      };
     });
 
-    if (!produk) {
+    return NextResponse.json(
+      {
+        success: true,
+        message: "Nota berhasil ditambahkan dan stok berhasil diperbarui",
+        data: hasil.nota,
+        stokTerbaru: hasil.stokTerbaru,
+      },
+      { status: 201 }
+    );
+  } catch (error) {
+    console.error("POST Nota:", error);
+
+    if (error.message === "PRODUK_NOT_FOUND") {
       return NextResponse.json(
         { success: false, message: "Produk tidak ditemukan" },
         { status: 404 }
       );
     }
 
-    const notaBaru = await prisma.nota.create({
-      data: {
-        produkId,
-        buyyer: buyyer.trim(),
-        jumlahbeli: jumlah,
-        tanggal: tanggalNota,
-        fotonota: fotonota?.trim() || null,
-      },
-      include: {
-        produk: {
-          select: {
-            id: true,
-            nama: true,
-          },
-        },
-      },
-    });
-
     return NextResponse.json(
-      {
-        success: true,
-        message: "Nota berhasil ditambahkan",
-        data: notaBaru,
-      },
-      { status: 201 }
-    );
-  } catch (error) {
-    console.error("POST Nota:", error);
-    return NextResponse.json(
-      { success: false, message: "Gagal menambahkan nota" },
+      { success: false, message: "Gagal menambahkan nota pembelian" },
       { status: 500 }
     );
   }
