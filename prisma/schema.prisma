@@ -27,6 +27,7 @@ model Produk {
   hargabeli Int?
   stok      Int      @default(0)
   fotoUrl   String?
+  isAktif   Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

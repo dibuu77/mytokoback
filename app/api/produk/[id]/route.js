@@ -173,6 +173,7 @@ export async function GET(request, { params }) {
   }
 }
 
+
 // ==========================================
 // POST: TAMBAH VARIAN PRODUK
 // Endpoint: POST /api/produk/:id
@@ -191,38 +192,49 @@ export async function POST(request, { params }) {
       );
     }
 
-    // Pastikan produk induk tersedia
+    // Pastikan produk induk tersedia dan masih aktif
     const produk = await prisma.produk.findUnique({
       where: { id: idValidation.output },
+      select: {
+        id: true,
+        isAktif: true,
+      },
     });
 
-    if (!produk) {
+    if (!produk || !produk.isAktif) {
       return NextResponse.json(
-        { success: false, message: "Produk tidak ditemukan" },
+        {
+          success: false,
+          message: "Produk tidak ditemukan atau sudah dinonaktifkan",
+        },
         { status: 404 }
       );
     }
 
     const { body, foto } = await ambilData(request);
 
-    // Validasi nama dan harga varian
+    // Validasi nama varian
     if (
       typeof body.nama !== "string" ||
       body.nama.trim().length < 3 ||
       body.nama.trim().length > 50
     ) {
       return NextResponse.json(
-        { success: false, message: "Nama varian harus 3-50 karakter" },
+        {
+          success: false,
+          message: "Nama varian harus 3-50 karakter",
+        },
         { status: 400 }
       );
     }
 
-    if (
-      !Number.isInteger(body.harga) ||
-      body.harga < 1
-    ) {
+    // Validasi harga varian
+    if (!Number.isInteger(body.harga) || body.harga < 1) {
       return NextResponse.json(
-        { success: false, message: "Harga varian harus bilangan bulat lebih dari 0" },
+        {
+          success: false,
+          message: "Harga varian harus bilangan bulat lebih dari 0",
+        },
         { status: 400 }
       );
     }
@@ -230,6 +242,7 @@ export async function POST(request, { params }) {
     // Upload foto varian jika tersedia
     const upload = await uploadFoto(foto, "mytoko/varian");
 
+    // Simpan varian
     const varian = await prisma.varianProduk.create({
       data: {
         produkId: idValidation.output,
@@ -251,6 +264,7 @@ export async function POST(request, { params }) {
     return errorResponse(error);
   }
 }
+
 
 // ==========================================
 // PUT: UPDATE SELURUH DATA PRODUK
@@ -366,7 +380,7 @@ export async function PATCH(request, { params }) {
 }
 
 // ==========================================
-// DELETE: HAPUS PRODUK
+// DELETE: NONAKTIFKAN PRODUK (SOFT DELETE)
 // ==========================================
 export async function DELETE(request, { params }) {
   try {
@@ -382,13 +396,27 @@ export async function DELETE(request, { params }) {
       );
     }
 
-    await prisma.produk.delete({
+    const produk = await prisma.produk.findUnique({
       where: { id: idValidation.output },
+    });
+
+    if (!produk || !produk.isAktif) {
+      return NextResponse.json(
+        { success: false, message: "Produk tidak ditemukan" },
+        { status: 404 }
+      );
+    }
+
+    await prisma.produk.update({
+      where: { id: idValidation.output },
+      data: {
+        isAktif: false,
+      },
     });
 
     return NextResponse.json({
       success: true,
-      message: "Produk berhasil dihapus",
+      message: "Produk berhasil dinonaktifkan",
     });
   } catch (error) {
     return errorResponse(error);
