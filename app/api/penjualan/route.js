@@ -91,7 +91,13 @@ async function kurangiStok(tx, items) {
   }
 }
 
-async function simpanPenjualan(tx, { namaPembeli, items, uangDiterima, sesi }) {
+async function simpanPenjualan(tx, {
+  namaPembeli,
+  items,
+  uangDiterima,
+  sesi,
+  sumberTransaksi,
+}) {
   const total = hitungTotal(items);
 
   if (uangDiterima < total) {
@@ -112,6 +118,7 @@ async function simpanPenjualan(tx, { namaPembeli, items, uangDiterima, sesi }) {
   return tx.pesanan.create({
     data: {
       namaPembeli: namaPembeli?.trim() || "Pelanggan",
+      sumberTransaksi,
       total,
       nomorNota: buatNomorNota(),
       uangDiterima,
@@ -154,6 +161,7 @@ export async function GET() {
     });
   } catch (error) {
     console.error("GET PENJUALAN ERROR:", error);
+
     return NextResponse.json(
       { success: false, message: "Gagal mengambil riwayat penjualan." },
       { status: 500 }
@@ -161,11 +169,19 @@ export async function GET() {
   }
 }
 
-// POST: Checkout Draft terpilih ATAU transaksi langsung dari Detail Produk
+// POST: Checkout Draft atau transaksi langsung
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { draftId, itemIds, produkId, varianId, jumlah, uangDiterima } = body;
+
+    const {
+      draftId,
+      itemIds,
+      produkId,
+      varianId,
+      jumlah,
+      uangDiterima,
+    } = body;
 
     if (!validasiNominal(uangDiterima)) {
       return NextResponse.json(
@@ -178,7 +194,7 @@ export async function POST(request) {
       async (tx) => {
         const sesi = await ambilSesiKasirAktif(tx);
 
-        // JALUR 1: Checkout item Draft yang dipilih
+        // JALUR 1: Checkout item Draft
         if (draftId) {
           if (!Array.isArray(itemIds) || itemIds.length === 0) {
             throw new Error("ITEM_DRAFT_BELUM_DIPILIH");
@@ -193,16 +209,23 @@ export async function POST(request) {
 
           const draft = await tx.draftPesanan.findUnique({
             where: { id: draftId },
-            include: { items: { where: { id: { in: itemIds } } } },
+            include: {
+              items: {
+                where: { id: { in: itemIds } },
+              },
+            },
           });
 
           if (!draft) throw new Error("DRAFT_TIDAK_DITEMUKAN");
+
           if (draft.status !== "DRAFT") {
             throw new Error("DRAFT_SUDAH_SELESAI");
           }
+
           if (!draft.namaPembeli?.trim()) {
             throw new Error("NAMA_PEMBELI_KOSONG");
           }
+
           if (draft.items.length !== itemIds.length) {
             throw new Error("ITEM_DRAFT_TIDAK_DITEMUKAN");
           }
@@ -212,11 +235,15 @@ export async function POST(request) {
             items: draft.items,
             uangDiterima,
             sesi,
+            sumberTransaksi: "DRAFT",
           });
 
-          // Hanya hapus item yang dibayar. Item lain tetap di Draft.
+          // Hanya hapus item Draft yang dibayar
           await tx.itemDraft.deleteMany({
-            where: { draftId, id: { in: itemIds } },
+            where: {
+              draftId,
+              id: { in: itemIds },
+            },
           });
 
           const sisaItem = await tx.itemDraft.count({
@@ -225,7 +252,10 @@ export async function POST(request) {
 
           if (sisaItem === 0) {
             await tx.draftPesanan.updateMany({
-              where: { id: draftId, status: "DRAFT" },
+              where: {
+                id: draftId,
+                status: "DRAFT",
+              },
               data: { status: "SELESAI" },
             });
           }
@@ -233,8 +263,11 @@ export async function POST(request) {
           return pesanan;
         }
 
-        // JALUR 2: Transaksi langsung dari Detail Produk (tanpa Draft)
-        if (!produkId) throw new Error("DATA_TRANSAKSI_TIDAK_LENGKAP");
+        // JALUR 2: Transaksi langsung dari Detail Produk
+        if (!produkId) {
+          throw new Error("DATA_TRANSAKSI_TIDAK_LENGKAP");
+        }
+
         if (!Number.isSafeInteger(jumlah) || jumlah <= 0) {
           throw new Error("JUMLAH_ITEM_TIDAK_VALID");
         }
@@ -242,7 +275,9 @@ export async function POST(request) {
         const produk = await tx.produk.findUnique({
           where: { id: produkId },
           include: {
-            varians: varianId ? { where: { id: varianId } } : false,
+            varians: varianId
+              ? { where: { id: varianId } }
+              : false,
           },
         });
 
@@ -254,7 +289,10 @@ export async function POST(request) {
 
         if (varianId) {
           const varian = produk.varians?.[0];
-          if (!varian) throw new Error("VARIAN_TIDAK_DITEMUKAN");
+
+          if (!varian) {
+            throw new Error("VARIAN_TIDAK_DITEMUKAN");
+          }
 
           item = {
             produkId: produk.id,
@@ -280,6 +318,7 @@ export async function POST(request) {
           items: [item],
           uangDiterima,
           sesi,
+          sumberTransaksi: "LANGSUNG",
         });
       },
       { isolationLevel: "Serializable" }
@@ -311,22 +350,38 @@ export async function POST(request) {
       DRAFT_SUDAH_SELESAI: ["Draft sudah selesai diproses.", 409],
       ITEM_DRAFT_BELUM_DIPILIH: ["Pilih minimal satu item Draft.", 400],
       ITEM_DRAFT_TIDAK_VALID: ["Daftar item Draft tidak valid.", 400],
-      ITEM_DRAFT_TIDAK_DITEMUKAN: ["Sebagian item tidak ditemukan di Draft tersebut.", 404],
+      ITEM_DRAFT_TIDAK_DITEMUKAN: [
+        "Sebagian item tidak ditemukan di Draft tersebut.",
+        404,
+      ],
       KASIR_BELUM_DIBUKA: ["Kasir belum dibuka.", 409],
       SESI_KASIR_SUDAH_DITUTUP: ["Sesi kasir sudah ditutup.", 409],
       NAMA_PEMBELI_KOSONG: ["Nama pembeli belum tersedia.", 400],
       UANG_TIDAK_CUKUP: ["Uang yang diterima tidak mencukupi.", 400],
       TOTAL_TIDAK_VALID: ["Total transaksi tidak valid.", 400],
       JUMLAH_ITEM_TIDAK_VALID: ["Jumlah item tidak valid.", 400],
-      DATA_TRANSAKSI_TIDAK_LENGKAP: ["Data transaksi tidak lengkap.", 400],
-      PRODUK_TIDAK_DITEMUKAN: ["Produk tidak ditemukan atau tidak aktif.", 404],
-      VARIAN_TIDAK_DITEMUKAN: ["Varian produk tidak ditemukan.", 404],
+      DATA_TRANSAKSI_TIDAK_LENGKAP: [
+        "Data transaksi tidak lengkap.",
+        400,
+      ],
+      PRODUK_TIDAK_DITEMUKAN: [
+        "Produk tidak ditemukan atau tidak aktif.",
+        404,
+      ],
+      VARIAN_TIDAK_DITEMUKAN: [
+        "Varian produk tidak ditemukan.",
+        404,
+      ],
     };
 
     if (error.message.startsWith("STOK_TIDAK_CUKUP:")) {
       const nama = error.message.split(":").slice(1).join(":");
+
       return NextResponse.json(
-        { success: false, message: `Stok ${nama} tidak mencukupi.` },
+        {
+          success: false,
+          message: `Stok ${nama} tidak mencukupi.`,
+        },
         { status: 409 }
       );
     }

@@ -69,16 +69,16 @@ model CartItem {
   varian VarianProduk? @relation(fields: [varianId], references: [id], onDelete: SetNull)
 }
 
-// PESANAN
 model Pesanan {
-  id           String   @id @default(cuid())
-  userId       String?
-  namaPembeli  String
-  total        Float
-  createdAt    DateTime @default(now())
-  nomorNota    String?  @unique
-  uangDiterima Int?
-  kembalian    Int?
+  id              String   @id @default(cuid())
+  userId          String?
+  namaPembeli     String
+  total           Float
+  createdAt       DateTime @default(now())
+  nomorNota       String?  @unique
+  uangDiterima    Int?
+  kembalian       Int?
+  sumberTransaksi String   @default("LANGSUNG")
 
   // Relasi sesi kasir
   sesiKasirId String?
