@@ -1,108 +1,255 @@
 
-import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { randomUUID } from "node:crypto";
+import { NextResponse } from "next/server";
 
-// POST: Checkout Draft menjadi transaksi penjualan
+// GET: Riwayat dan ringkasan seluruh penjualan
+export async function GET() {
+  try {
+    const [riwayat, totalTransaksi, aggregate] =
+      await Promise.all([
+        prisma.pesanan.findMany({
+          orderBy: {
+            createdAt: "desc",
+          },
+          include: {
+            detailItems: {
+              include: {
+                produk: {
+                  select: {
+                    id: true,
+                    nama: true,
+                    fotoUrl: true,
+                  },
+                },
+                varian: {
+                  select: {
+                    id: true,
+                    nama: true,
+                  },
+                },
+              },
+            },
+          },
+        }),
+
+        prisma.pesanan.count(),
+
+        prisma.pesanan.aggregate({
+          _sum: {
+            total: true,
+          },
+        }),
+      ]);
+
+    return NextResponse.json({
+      success: true,
+      totalTransaksi,
+      totalPenjualan: aggregate._sum.total || 0,
+      data: riwayat,
+    });
+  } catch (error) {
+    console.error("GET PENJUALAN ERROR:", error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        message: "Gagal mengambil riwayat penjualan.",
+      },
+      { status: 500 }
+    );
+  }
+}
+
+// POST: Checkout Draft
 export async function POST(request) {
   try {
-    const { draftId } = await request.json();
+    const body = await request.json();
+    const { draftId, uangDiterima } = body;
 
     if (!draftId) {
       return NextResponse.json(
-        { success: false, message: "ID Draft tidak ditemukan" },
+        {
+          success: false,
+          message: "ID Draft wajib diisi.",
+        },
         { status: 400 }
       );
     }
 
-    const result = await prisma.$transaction(
+    if (
+      !Number.isSafeInteger(uangDiterima) ||
+      uangDiterima < 0
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Nominal uang diterima tidak valid.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const hasil = await prisma.$transaction(
       async (tx) => {
-        // Ambil Draft beserta item
+        // Ambil Draft dan seluruh item
         const draft = await tx.draftPesanan.findUnique({
-          where: { id: draftId },
-          include: { items: true },
+          where: {
+            id: draftId,
+          },
+          include: {
+            items: {
+              orderBy: {
+                createdAt: "asc",
+              },
+            },
+          },
         });
 
-        if (!draft || draft.status !== "DRAFT") {
-          throw new Error(
-            "Draft tidak ditemukan atau sudah diproses"
-          );
+        if (!draft) {
+          throw new Error("DRAFT_TIDAK_DITEMUKAN");
+        }
+
+        if (draft.status !== "DRAFT") {
+          throw new Error("DRAFT_SUDAH_SELESAI");
         }
 
         if (!draft.items.length) {
-          throw new Error("Draft masih kosong");
+          throw new Error("DRAFT_KOSONG");
         }
 
         if (!draft.namaPembeli?.trim()) {
-          throw new Error("Nama pembeli belum tersedia");
+          throw new Error("NAMA_PEMBELI_KOSONG");
         }
 
-        // Pastikan sesi kasir sedang dibuka
+        // Pastikan sesi kasir masih terbuka
         const sesi = await tx.sesiKasir.findFirst({
-          where: { status: "BUKA" },
-          orderBy: { dibukaPada: "desc" },
+          where: {
+            status: "BUKA",
+          },
+          orderBy: {
+            dibukaPada: "desc",
+          },
         });
 
         if (!sesi) {
-          throw new Error("Buka sesi kasir terlebih dahulu");
+          throw new Error("KASIR_BELUM_DIBUKA");
         }
 
         // Hitung total berdasarkan harga snapshot Draft
         const total = draft.items.reduce(
-          (sum, item) => sum + item.harga * item.jumlah,
+          (sum, item) =>
+            sum + Number(item.harga) * Number(item.jumlah),
           0
         );
 
-        if (!Number.isSafeInteger(total) || total <= 0) {
-          throw new Error("Total pembayaran tidak valid");
+        if (!Number.isSafeInteger(total) || total < 0) {
+          throw new Error("TOTAL_TIDAK_VALID");
         }
 
-        // Kurangi stok setiap item
+        if (uangDiterima < total) {
+          throw new Error("UANG_TIDAK_CUKUP");
+        }
+
+        const kembalian = uangDiterima - total;
+
+        // Kurangi stok berdasarkan setiap item Draft
         for (const item of draft.items) {
-          const update = item.varianId
-            ? await tx.varianProduk.updateMany({
+          if (
+            !Number.isSafeInteger(item.jumlah) ||
+            item.jumlah <= 0
+          ) {
+            throw new Error("JUMLAH_ITEM_TIDAK_VALID");
+          }
+
+          if (item.varianId) {
+            const updateStok =
+              await tx.varianProduk.updateMany({
                 where: {
                   id: item.varianId,
                   produkId: item.produkId,
-                  stok: { gte: item.jumlah },
+                  stok: {
+                    gte: item.jumlah,
+                  },
                 },
                 data: {
-                  stok: { decrement: item.jumlah },
-                },
-              })
-            : await tx.produk.updateMany({
-                where: {
-                  id: item.produkId,
-                  stok: { gte: item.jumlah },
-                },
-                data: {
-                  stok: { decrement: item.jumlah },
+                  stok: {
+                    decrement: item.jumlah,
+                  },
                 },
               });
 
-          if (update.count !== 1) {
-            throw new Error(
-              `Stok ${item.namaProduk}${
-                item.namaVarian
-                  ? ` (${item.namaVarian})`
-                  : ""
-              } tidak mencukupi`
-            );
+            if (updateStok.count !== 1) {
+              throw new Error(
+                `Stok varian ${item.namaVarian || item.namaProduk} tidak mencukupi.`
+              );
+            }
+          } else {
+            const updateStok =
+              await tx.produk.updateMany({
+                where: {
+                  id: item.produkId,
+                  stok: {
+                    gte: item.jumlah,
+                  },
+                },
+                data: {
+                  stok: {
+                    decrement: item.jumlah,
+                  },
+                },
+              });
+
+            if (updateStok.count !== 1) {
+              throw new Error(
+                `Stok produk ${item.namaProduk} tidak mencukupi.`
+              );
+            }
           }
         }
 
-        // Buat transaksi penjualan
+        // Pastikan sesi belum ditutup sebelum mencatat penjualan
+        const updateSesi = await tx.sesiKasir.updateMany({
+          where: {
+            id: sesi.id,
+            status: "BUKA",
+          },
+          data: {
+            totalJual: {
+              increment: total,
+            },
+          },
+        });
+
+        if (updateSesi.count !== 1) {
+          throw new Error("SESI_KASIR_SUDAH_DITUTUP");
+        }
+
+        // Buat nomor nota unik
+        const nomorNota = `INV-${randomUUID()
+          .replace(/-/g, "")
+          .slice(0, 12)
+          .toUpperCase()}`;
+
+        // Simpan transaksi dan hubungkan ke sesi kasir
         const pesanan = await tx.pesanan.create({
           data: {
-            namaPembeli: draft.namaPembeli.trim(),
+            namaPembeli: draft.namaPembeli,
             total,
+            nomorNota,
+            uangDiterima,
+            kembalian,
+
+            // Relasi transaksi dengan sesi kasir
+            sesiKasirId: sesi.id,
+
             detailItems: {
               create: draft.items.map((item) => ({
                 produkId: item.produkId,
                 varianId: item.varianId,
+                namaProduk: item.namaProduk,
                 namaVarian: item.namaVarian,
                 jumlah: item.jumlah,
-
-                // Gunakan harga snapshot Draft
                 harga: item.harga,
               })),
             },
@@ -110,22 +257,25 @@ export async function POST(request) {
           include: {
             detailItems: {
               include: {
-                produk: true,
-                varian: true,
+                produk: {
+                  select: {
+                    id: true,
+                    nama: true,
+                    fotoUrl: true,
+                  },
+                },
+                varian: {
+                  select: {
+                    id: true,
+                    nama: true,
+                  },
+                },
               },
             },
           },
         });
 
-        // Tambahkan total penjualan sesi kasir
-        await tx.sesiKasir.update({
-          where: { id: sesi.id },
-          data: {
-            totalJual: { increment: total },
-          },
-        });
-
-        // Tandai Draft selesai, jangan hapus datanya
+        // Tandai Draft selesai, jangan dihapus
         const updateDraft = await tx.draftPesanan.updateMany({
           where: {
             id: draftId,
@@ -137,9 +287,7 @@ export async function POST(request) {
         });
 
         if (updateDraft.count !== 1) {
-          throw new Error(
-            "Draft sudah diproses oleh transaksi lain"
-          );
+          throw new Error("DRAFT_SUDAH_DIPROSES");
         }
 
         return pesanan;
@@ -149,75 +297,82 @@ export async function POST(request) {
       }
     );
 
-    return NextResponse.json({
-      success: true,
-      message: "Pembayaran berhasil diselesaikan",
-      data: result,
-    });
+    return NextResponse.json(
+      {
+        success: true,
+        message: "Pembayaran berhasil.",
+        data: hasil,
+      },
+      { status: 201 }
+    );
   } catch (error) {
-    console.error("CHECKOUT ERROR:", error);
+    console.error("POST PENJUALAN ERROR:", error);
 
-    // Konflik transaksi bersamaan
     if (error.code === "P2034") {
       return NextResponse.json(
         {
           success: false,
           message:
-            "Draft sedang diproses. Silakan periksa kembali transaksi.",
+            "Transaksi mengalami konflik. Silakan coba kembali.",
         },
         { status: 409 }
       );
     }
 
+    const errors = {
+      DRAFT_TIDAK_DITEMUKAN: {
+        message: "Draft tidak ditemukan.",
+        status: 404,
+      },
+      DRAFT_SUDAH_SELESAI: {
+        message: "Draft sudah selesai diproses.",
+        status: 409,
+      },
+      DRAFT_SUDAH_DIPROSES: {
+        message: "Draft sudah diproses oleh transaksi lain.",
+        status: 409,
+      },
+      KASIR_BELUM_DIBUKA: {
+        message: "Kasir belum dibuka.",
+        status: 409,
+      },
+      SESI_KASIR_SUDAH_DITUTUP: {
+        message: "Sesi kasir sudah ditutup.",
+        status: 409,
+      },
+      DRAFT_KOSONG: {
+        message: "Draft belum memiliki produk.",
+        status: 400,
+      },
+      NAMA_PEMBELI_KOSONG: {
+        message: "Nama pembeli belum tersedia.",
+        status: 400,
+      },
+      UANG_TIDAK_CUKUP: {
+        message: "Uang yang diterima tidak mencukupi.",
+        status: 400,
+      },
+      TOTAL_TIDAK_VALID: {
+        message: "Total transaksi tidak valid.",
+        status: 400,
+      },
+      JUMLAH_ITEM_TIDAK_VALID: {
+        message: "Jumlah item tidak valid.",
+        status: 400,
+      },
+    };
+
+    const knownError = errors[error.message];
+
     return NextResponse.json(
       {
         success: false,
-        message: error.message || "Gagal memproses pembayaran",
+        message:
+          knownError?.message ||
+          error.message ||
+          "Pembayaran gagal.",
       },
-      { status: 400 }
-    );
-  }
-}
-
-// GET: Mengambil riwayat penjualan
-export async function GET() {
-  try {
-    const [pesanan, totalTransaksi, hasilTotal] =
-      await Promise.all([
-        prisma.pesanan.findMany({
-          orderBy: { createdAt: "desc" },
-          include: {
-            detailItems: {
-              include: {
-                produk: true,
-                varian: true,
-              },
-            },
-          },
-        }),
-
-        prisma.pesanan.count(),
-
-        prisma.pesanan.aggregate({
-          _sum: { total: true },
-        }),
-      ]);
-
-    return NextResponse.json({
-      success: true,
-      data: pesanan,
-      totalTransaksi,
-      totalPenjualan: hasilTotal._sum.total || 0,
-    });
-  } catch (error) {
-    console.error("GET PENJUALAN ERROR:", error);
-
-    return NextResponse.json(
-      {
-        success: false,
-        message: "Gagal mengambil data penjualan",
-      },
-      { status: 500 }
+      { status: knownError?.status || 400 }
     );
   }
 }

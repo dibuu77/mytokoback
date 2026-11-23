@@ -18,6 +18,13 @@ export async function GET(request) {
             fotoUrl: true,
           },
         },
+        varian: {
+          select: {
+            id: true,
+            nama: true,
+            stok: true,
+          },
+        },
       },
       orderBy: {
         tanggal: "desc",
@@ -38,12 +45,19 @@ export async function GET(request) {
   }
 }
 
-// POST: Tambah nota pembelian dan stok produk
+// POST: Tambah nota dan stok pembelian
 export async function POST(request) {
   try {
     const body = await request.json();
 
-    const { produkId, buyyer, jumlahbeli, tanggal, fotonota } = body;
+    const {
+      produkId,
+      varianId,
+      buyyer,
+      jumlahbeli,
+      tanggal,
+      fotonota,
+    } = body;
 
     if (
       !produkId ||
@@ -60,6 +74,7 @@ export async function POST(request) {
 
     const jumlah = Number(jumlahbeli);
     const tanggalNota = new Date(tanggal);
+    const idVarian = varianId?.trim() || null;
 
     if (!Number.isSafeInteger(jumlah) || jumlah < 1) {
       return NextResponse.json(
@@ -85,10 +100,48 @@ export async function POST(request) {
         throw new Error("PRODUK_NOT_FOUND");
       }
 
-      // Simpan nota pembelian
+      let stokTerbaru;
+
+      // Pembelian produk dengan varian
+      if (idVarian) {
+        const varian = await tx.varianProduk.findFirst({
+          where: {
+            id: idVarian,
+            produkId,
+          },
+        });
+
+        if (!varian) {
+          throw new Error("VARIAN_NOT_FOUND");
+        }
+
+        const updated = await tx.varianProduk.update({
+          where: { id: idVarian },
+          data: {
+            stok: { increment: jumlah },
+          },
+          select: { stok: true },
+        });
+
+        stokTerbaru = updated.stok;
+      } else {
+        // Pembelian produk tanpa varian
+        const updated = await tx.produk.update({
+          where: { id: produkId },
+          data: {
+            stok: { increment: jumlah },
+          },
+          select: { stok: true },
+        });
+
+        stokTerbaru = updated.stok;
+      }
+
+      // Simpan catatan pembelian
       const notaBaru = await tx.nota.create({
         data: {
           produkId,
+          varianId: idVarian,
           buyyer: buyyer.trim(),
           jumlahbeli: jumlah,
           tanggal: tanggalNota,
@@ -101,35 +154,25 @@ export async function POST(request) {
               nama: true,
             },
           },
-        },
-      });
-
-      // Tambahkan stok produk
-      await tx.produk.update({
-        where: { id: produkId },
-        data: {
-          stok: {
-            increment: jumlah,
+          varian: {
+            select: {
+              id: true,
+              nama: true,
+            },
           },
         },
       });
 
-      // Ambil stok terbaru
-      const produkTerbaru = await tx.produk.findUnique({
-        where: { id: produkId },
-        select: { stok: true },
-      });
-
       return {
         nota: notaBaru,
-        stokTerbaru: produkTerbaru.stok,
+        stokTerbaru,
       };
     });
 
     return NextResponse.json(
       {
         success: true,
-        message: "Nota berhasil ditambahkan dan stok berhasil diperbarui",
+        message: "Nota berhasil ditambahkan dan stok diperbarui",
         data: hasil.nota,
         stokTerbaru: hasil.stokTerbaru,
       },
@@ -141,6 +184,13 @@ export async function POST(request) {
     if (error.message === "PRODUK_NOT_FOUND") {
       return NextResponse.json(
         { success: false, message: "Produk tidak ditemukan" },
+        { status: 404 }
+      );
+    }
+
+    if (error.message === "VARIAN_NOT_FOUND") {
+      return NextResponse.json(
+        { success: false, message: "Varian tidak ditemukan pada produk tersebut" },
         { status: 404 }
       );
     }

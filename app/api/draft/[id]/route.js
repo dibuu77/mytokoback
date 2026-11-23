@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 
-// GET: Detail draft berdasarkan ID
+// GET: Detail Draft berdasarkan ID
 export async function GET(request, { params }) {
   try {
     const { id } = await params;
@@ -15,32 +15,44 @@ export async function GET(request, { params }) {
             produk: true,
             varian: true,
           },
-          orderBy: { createdAt: "asc" },
+          orderBy: {
+            createdAt: "asc",
+          },
         },
       },
     });
 
     if (!draft || draft.status !== "DRAFT") {
       return NextResponse.json(
-        { success: false, message: "Draft tidak ditemukan" },
+        {
+          success: false,
+          message: "Draft tidak ditemukan.",
+        },
         { status: 404 }
       );
     }
 
     const total = draft.items.reduce(
-      (sum, item) => sum + item.harga * item.jumlah,
+      (sum, item) =>
+        sum + Number(item.harga) * Number(item.jumlah),
       0
     );
 
     return NextResponse.json({
       success: true,
-      data: { ...draft, total },
+      data: {
+        ...draft,
+        total,
+      },
     });
   } catch (error) {
     console.error("GET DETAIL DRAFT ERROR:", error);
 
     return NextResponse.json(
-      { success: false, message: "Gagal mengambil detail Draft" },
+      {
+        success: false,
+        message: "Gagal mengambil detail Draft.",
+      },
       { status: 500 }
     );
   }
@@ -50,103 +62,182 @@ export async function GET(request, { params }) {
 export async function PATCH(request, { params }) {
   try {
     const { id } = await params;
-    const { itemId, jumlah } = await request.json();
+    const body = await request.json();
+    const { itemId, jumlah } = body;
 
-    if (!itemId || !Number.isInteger(jumlah) || jumlah < 1) {
+    if (
+      !itemId ||
+      !Number.isSafeInteger(jumlah) ||
+      jumlah < 1
+    ) {
       return NextResponse.json(
-        { success: false, message: "Jumlah tidak valid" },
+        {
+          success: false,
+          message: "Jumlah tidak valid.",
+        },
         { status: 400 }
       );
     }
 
-    const hasil = await prisma.$transaction(async (tx) => {
-      // Pastikan Draft masih aktif
-      const draft = await tx.draftPesanan.findFirst({
-        where: { id, status: "DRAFT" },
-      });
-
-      if (!draft) throw new Error("Draft tidak ditemukan");
-
-      // Ambil item yang akan diedit
-      const item = await tx.itemDraft.findFirst({
-        where: {
-          id: itemId,
-          draftId: id,
-        },
-      });
-
-      if (!item) {
-        throw new Error("Produk tidak ditemukan dalam Draft");
-      }
-
-      // Ambil produk
-      const produk = await tx.produk.findUnique({
-        where: { id: item.produkId },
-      });
-
-      if (!produk) throw new Error("Produk tidak ditemukan");
-
-      let stok = produk.stok;
-
-      // Jika item menggunakan varian, ambil stok varian
-      if (item.varianId) {
-        const varian = await tx.varianProduk.findFirst({
+    const hasil = await prisma.$transaction(
+      async (tx) => {
+        // Pastikan Draft masih aktif
+        const draft = await tx.draftPesanan.findFirst({
           where: {
-            id: item.varianId,
-            produkId: item.produkId,
+            id,
+            status: "DRAFT",
           },
         });
 
-        if (!varian) throw new Error("Varian tidak ditemukan");
+        if (!draft) {
+          throw new Error("DRAFT_TIDAK_DITEMUKAN");
+        }
 
-        stok = varian.stok;
+        // Ambil item yang akan diedit
+        const item = await tx.itemDraft.findFirst({
+          where: {
+            id: itemId,
+            draftId: id,
+          },
+        });
+
+        if (!item) {
+          throw new Error("ITEM_TIDAK_DITEMUKAN");
+        }
+
+        // Ambil produk
+        const produk = await tx.produk.findUnique({
+          where: {
+            id: item.produkId,
+          },
+        });
+
+        if (!produk) {
+          throw new Error("PRODUK_TIDAK_DITEMUKAN");
+        }
+
+        let stok = produk.stok;
+
+        // Jika menggunakan varian, ambil stok varian
+        if (item.varianId) {
+          const varian = await tx.varianProduk.findFirst({
+            where: {
+              id: item.varianId,
+              produkId: item.produkId,
+            },
+          });
+
+          if (!varian) {
+            throw new Error("VARIAN_TIDAK_DITEMUKAN");
+          }
+
+          stok = varian.stok;
+        }
+
+        // Hitung jumlah pada baris lain
+        // dengan produk dan varian yang sama
+        const jumlahLain = await tx.itemDraft.aggregate({
+          where: {
+            draftId: id,
+            produkId: item.produkId,
+            varianId: item.varianId,
+            id: {
+              not: itemId,
+            },
+          },
+          _sum: {
+            jumlah: true,
+          },
+        });
+
+        const jumlahSudahAda =
+          jumlahLain._sum.jumlah || 0;
+
+        const totalJumlah = jumlahSudahAda + jumlah;
+
+        // Pastikan seluruh baris tidak melebihi stok
+        if (totalJumlah > stok) {
+          throw new Error(
+            `Stok tidak cukup. Maksimal jumlah pada baris ini: ${
+              Math.max(0, stok - jumlahSudahAda)
+            }.`
+          );
+        }
+
+        // Ubah jumlah saja.
+        // Harga dan tanggal item tetap dipertahankan.
+        const itemUpdate = await tx.itemDraft.update({
+          where: {
+            id: itemId,
+          },
+          data: {
+            jumlah,
+          },
+        });
+
+        // Perbarui aktivitas Draft
+        await tx.draftPesanan.update({
+          where: {
+            id,
+          },
+          data: {
+            updatedAt: new Date(),
+          },
+        });
+
+        return itemUpdate;
+      },
+      {
+        isolationLevel: "Serializable",
       }
-
-      // Hitung jumlah produk pada baris lain
-      // dengan produk dan varian yang sama
-      const jumlahLain = await tx.itemDraft.aggregate({
-        where: {
-          draftId: id,
-          produkId: item.produkId,
-          varianId: item.varianId,
-          id: { not: itemId },
-        },
-        _sum: {
-          jumlah: true,
-        },
-      });
-
-      const totalJumlah =
-        (jumlahLain._sum.jumlah || 0) + jumlah;
-
-      // Pastikan total seluruh baris tidak melebihi stok
-      if (totalJumlah > stok) {
-        throw new Error(
-          `Stok tidak cukup. Maksimal jumlah pada baris ini: ${
-            stok - (jumlahLain._sum.jumlah || 0)
-          }`
-        );
-      }
-
-      // Ubah jumlah saja.
-      // Harga dan tanggal item tetap dipertahankan.
-      return await tx.itemDraft.update({
-        where: { id: itemId },
-        data: { jumlah },
-      });
-    });
+    );
 
     return NextResponse.json({
       success: true,
-      message: "Jumlah produk berhasil diubah",
+      message: "Jumlah produk berhasil diubah.",
       data: hasil,
     });
   } catch (error) {
     console.error("PATCH DETAIL DRAFT ERROR:", error);
 
+    if (error.code === "P2034") {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Draft sedang mengalami perubahan. Silakan coba kembali.",
+        },
+        { status: 409 }
+      );
+    }
+
+    const errors = {
+      DRAFT_TIDAK_DITEMUKAN: {
+        message: "Draft tidak ditemukan.",
+        status: 404,
+      },
+      ITEM_TIDAK_DITEMUKAN: {
+        message: "Produk tidak ditemukan dalam Draft.",
+        status: 404,
+      },
+      PRODUK_TIDAK_DITEMUKAN: {
+        message: "Produk tidak ditemukan.",
+        status: 404,
+      },
+      VARIAN_TIDAK_DITEMUKAN: {
+        message: "Varian tidak ditemukan.",
+        status: 404,
+      },
+    };
+
+    const knownError = errors[error.message];
+
     return NextResponse.json(
-      { success: false, message: error.message },
-      { status: 400 }
+      {
+        success: false,
+        message: knownError?.message || error.message,
+      },
+      { status: knownError?.status || 400 }
     );
   }
 }
@@ -160,49 +251,99 @@ export async function DELETE(request, { params }) {
 
     if (!itemId) {
       return NextResponse.json(
-        { success: false, message: "ID produk wajib diisi" },
+        {
+          success: false,
+          message: "ID produk wajib diisi.",
+        },
         { status: 400 }
       );
     }
 
-    await prisma.$transaction(async (tx) => {
-      // Pastikan Draft masih aktif
-      const draft = await tx.draftPesanan.findFirst({
-        where: {
-          id,
-          status: "DRAFT",
-        },
-      });
+    await prisma.$transaction(
+      async (tx) => {
+        // Pastikan Draft masih aktif
+        const draft = await tx.draftPesanan.findFirst({
+          where: {
+            id,
+            status: "DRAFT",
+          },
+        });
 
-      if (!draft) throw new Error("Draft tidak ditemukan");
+        if (!draft) {
+          throw new Error("DRAFT_TIDAK_DITEMUKAN");
+        }
 
-      // Pastikan item merupakan bagian dari Draft tersebut
-      const item = await tx.itemDraft.findFirst({
-        where: {
-          id: itemId,
-          draftId: id,
-        },
-      });
+        // Pastikan item merupakan bagian dari Draft
+        const item = await tx.itemDraft.findFirst({
+          where: {
+            id: itemId,
+            draftId: id,
+          },
+        });
 
-      if (!item) {
-        throw new Error("Produk tidak ditemukan dalam Draft");
+        if (!item) {
+          throw new Error("ITEM_TIDAK_DITEMUKAN");
+        }
+
+        // Hapus item
+        await tx.itemDraft.delete({
+          where: {
+            id: itemId,
+          },
+        });
+
+        // Perbarui aktivitas Draft
+        await tx.draftPesanan.update({
+          where: {
+            id,
+          },
+          data: {
+            updatedAt: new Date(),
+          },
+        });
+      },
+      {
+        isolationLevel: "Serializable",
       }
-
-      await tx.itemDraft.delete({
-        where: { id: itemId },
-      });
-    });
+    );
 
     return NextResponse.json({
       success: true,
-      message: "Produk berhasil dihapus dari Draft",
+      message: "Produk berhasil dihapus dari Draft.",
     });
   } catch (error) {
     console.error("DELETE DETAIL DRAFT ERROR:", error);
 
+    if (error.code === "P2034") {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Draft sedang mengalami perubahan. Silakan coba kembali.",
+        },
+        { status: 409 }
+      );
+    }
+
+    const errors = {
+      DRAFT_TIDAK_DITEMUKAN: {
+        message: "Draft tidak ditemukan.",
+        status: 404,
+      },
+      ITEM_TIDAK_DITEMUKAN: {
+        message: "Produk tidak ditemukan dalam Draft.",
+        status: 404,
+      },
+    };
+
+    const knownError = errors[error.message];
+
     return NextResponse.json(
-      { success: false, message: error.message },
-      { status: 400 }
+      {
+        success: false,
+        message: knownError?.message || error.message,
+      },
+      { status: knownError?.status || 400 }
     );
   }
 }

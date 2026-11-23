@@ -71,14 +71,23 @@ model CartItem {
 
 // PESANAN
 model Pesanan {
-  id          String   @id @default(cuid())
-  userId      String?
-  namaPembeli String
-  total       Float
-  createdAt   DateTime @default(now())
+  id           String   @id @default(cuid())
+  userId       String?
+  namaPembeli  String
+  total        Float
+  createdAt    DateTime @default(now())
+  nomorNota    String?  @unique
+  uangDiterima Int?
+  kembalian    Int?
+
+  // Relasi sesi kasir
+  sesiKasirId String?
+  sesiKasir   SesiKasir? @relation(fields: [sesiKasirId], references: [id], onDelete: SetNull)
 
   user        User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
   detailItems DetailPesanan[]
+
+  @@index([sesiKasirId])
 }
 
 // DETAIL PESANAN
@@ -90,13 +99,14 @@ model DetailPesanan {
   namaVarian String?
   jumlah     Int
   harga      Int
+  namaProduk String?
 
   pesanan Pesanan       @relation(fields: [pesananId], references: [id], onDelete: Cascade)
   produk  Produk        @relation(fields: [produkId], references: [id])
   varian  VarianProduk? @relation(fields: [varianId], references: [id], onDelete: SetNull)
 }
 
-// NOTA LAMA
+// NOTA PEMBELIAN DARI SUPPLIER
 model nota {
   id         String   @id @default(cuid())
   buyyer     String
@@ -147,12 +157,18 @@ model ItemDraft {
   @@index([varianId])
 }
 
+// SESI KASIR
 model SesiKasir {
-  id          String    @id @default(cuid())
-  modalAwal   Int
-  uangAkhir   Int?
-  totalJual   Int       @default(0)
-  status      String    @default("BUKA")
-  dibukaPada  DateTime  @default(now())
-  ditutupPada DateTime?
+  id             String    @id @default(cuid())
+  modalAwal      Int
+  uangAkhir      Int?
+  uangSeharusnya Int?
+  selisih        Int?
+  totalJual      Int       @default(0)
+  status         String    @default("BUKA")
+  dibukaPada     DateTime  @default(now())
+  ditutupPada    DateTime?
+
+  // Relasi transaksi penjualan
+  pesanan Pesanan[]
 }
