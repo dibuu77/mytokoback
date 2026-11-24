@@ -16,6 +16,7 @@ export async function PATCH(request, { params }) {
 
       body.nama = formData.get("nama");
       body.harga = Number(formData.get("harga"));
+      body.stok = Number(formData.get("stok"));
       foto = formData.get("foto");
     } else {
       body = await request.json();
@@ -39,6 +40,13 @@ export async function PATCH(request, { params }) {
       );
     }
 
+    if (!Number.isInteger(body.stok) || body.stok < 0) {
+      return NextResponse.json(
+        { success: false, message: "Stok varian tidak valid" },
+        { status: 400 }
+      );
+    }
+
     const existing = await prisma.varianProduk.findFirst({
       where: { id: varianId, produkId: id },
     });
@@ -53,9 +61,15 @@ export async function PATCH(request, { params }) {
     let fotoUrl;
 
     if (foto && typeof foto !== "string") {
-      if (!foto.type.startsWith("image/") || foto.size > 5 * 1024 * 1024) {
+      if (
+        !foto.type.startsWith("image/") ||
+        foto.size > 5 * 1024 * 1024
+      ) {
         return NextResponse.json(
-          { success: false, message: "Foto harus berupa gambar maksimal 5 MB" },
+          {
+            success: false,
+            message: "Foto harus berupa gambar maksimal 5 MB",
+          },
           { status: 400 }
         );
       }
@@ -82,6 +96,7 @@ export async function PATCH(request, { params }) {
       data: {
         nama: body.nama.trim(),
         harga: body.harga,
+        stok: body.stok,
         ...(fotoUrl && { fotoUrl }),
       },
     });

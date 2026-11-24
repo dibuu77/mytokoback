@@ -140,7 +140,7 @@ async function simpanPenjualan(tx, {
 }
 
 
-// GET: Seluruh riwayat penjualan + ringkasan sesi kasir aktif
+// GET: Transaksi dan ringkasan sesi kasir aktif
 export async function GET() {
   try {
     const sesiAktif = await prisma.sesiKasir.findFirst({
@@ -150,13 +150,14 @@ export async function GET() {
     });
 
     const [data, totalTransaksi, aggregate] = await Promise.all([
-      // Riwayat tetap mengambil semua transaksi
-      prisma.pesanan.findMany({
-        orderBy: { createdAt: "desc" },
-        include: detailInclude,
-      }),
+      sesiAktif
+        ? prisma.pesanan.findMany({
+            where: { sesiKasirId: sesiAktif.id },
+            orderBy: { createdAt: "desc" },
+            include: detailInclude,
+          })
+        : Promise.resolve([]),
 
-      // Ringkasan hanya menghitung transaksi sesi aktif
       sesiAktif
         ? prisma.pesanan.count({
             where: { sesiKasirId: sesiAktif.id },
