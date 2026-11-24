@@ -173,7 +173,6 @@ export async function GET(request, { params }) {
   }
 }
 
-
 // ==========================================
 // POST: TAMBAH VARIAN PRODUK
 // Endpoint: POST /api/produk/:id
@@ -239,15 +238,27 @@ export async function POST(request, { params }) {
       );
     }
 
+    // Validasi stok varian
+    if (!Number.isInteger(body.stok) || body.stok < 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Stok varian harus bilangan bulat minimal 0",
+        },
+        { status: 400 }
+      );
+    }
+
     // Upload foto varian jika tersedia
     const upload = await uploadFoto(foto, "mytoko/varian");
 
-    // Simpan varian
+    // Simpan varian beserta stok
     const varian = await prisma.varianProduk.create({
       data: {
         produkId: idValidation.output,
         nama: body.nama.trim(),
         harga: body.harga,
+        stok: body.stok,
         ...(upload && { fotoUrl: upload.secure_url }),
       },
     });
@@ -264,7 +275,6 @@ export async function POST(request, { params }) {
     return errorResponse(error);
   }
 }
-
 
 // ==========================================
 // PUT: UPDATE SELURUH DATA PRODUK
